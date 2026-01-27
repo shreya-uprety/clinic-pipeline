@@ -131,6 +131,26 @@
             color: white;
         }
 
+        button.warning {
+            background: #f59e0b;
+            color: white;
+        }
+
+        button.recording {
+            background: #dc2626;
+            color: white;
+            animation: pulse-recording 1.5s infinite;
+        }
+
+        @keyframes pulse-recording {
+            0%, 100% {
+                opacity: 1;
+            }
+            50% {
+                opacity: 0.7;
+            }
+        }
+
         button:disabled {
             opacity: 0.5;
             cursor: not-allowed;
@@ -371,6 +391,21 @@
                     Disconnected
                 </span>
             </div>
+
+            <div class="control-row">
+                <label>Voice Mode:</label>
+                <div class="button-group">
+                    <button class="warning" id="voiceBtn" onclick="toggleVoiceRecording()" disabled>
+                        🎤 Record Once
+                    </button>
+                    <button class="success" id="voiceChatBtn" onclick="toggleVoiceChatMode()" disabled style="background: #8b5cf6;">
+                        🗣️ Voice Chat Mode
+                    </button>
+                </div>
+                <span id="voiceModeStatus" style="font-size: 12px; color: #666; display: none;">
+                    🔄 Continuous voice conversation active
+                </span>
+            </div>
         </div>
 
         <div class="messages" id="messages">
@@ -380,10 +415,12 @@
                     <span class="message-time" id="startTime"></span>
                 </div>
                 <div class="message-content">
-                    Welcome! You can test the chat agent using REST API or WebSocket.
+                    Welcome! You can test the chat agent using REST API, WebSocket, or Voice.
                     
 • REST API: Type a message and click "Send REST"
 • WebSocket: Click "Connect WebSocket" first, then messages will stream in real-time
+• Voice (Single): Click "Record Once" to speak one message
+• Voice Chat Mode: Click "Voice Chat Mode" for continuous 2-way conversation
 • Patient ID: Change the patient ID above to test different patients
                 </div>
             </div>
@@ -421,11 +458,35 @@
     <script>
         let ws = null;
         let currentStreamingMessage = null;
+        let mediaRecorder = null;
+        let audioChunks = [];
+        let isRecording = false;
+        let voiceChatMode = false;
+        let isAgentSpeaking = false;
+        let currentAudio = null;
+        let silenceDetectionTimer = null;
+        let audioContext = null;
+        let analyser = null;
+        let silenceThreshold = 0.01; // Adjust based on testing
+        let silenceDelay = 2000; // 2 seconds of silence before auto-stop
 
         // Initialize
         document.addEventListener('DOMContentLoaded', () => {
             document.getElementById('startTime').textContent = new Date().toLocaleTimeString();
+            checkMicrophonePermission();
         });
+
+        // Check microphone permission
+        async function checkMicrophonePermission() {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                stream.getTracks().forEach(track => track.stop());
+                console.log('Microphone access granted');
+            } catch (error) {
+                console.warn('Microphone access denied:', error);
+                addMessage('System', '⚠️ Microphone access denied. Voice features will not work.', 'system');
+            }
+        }
 
         // Handle Enter key (Shift+Enter for new line)
         function handleKeyPress(event) {
@@ -580,6 +641,14 @@
                             addMessage('Error', data.error, 'system');
                             break;
                         
+                        case 'transcription':
+                            addMessage('You (Voice)', data.content, 'user');
+                            break;
+                        
+                        case 'audio_response':
+                            playAudioResponse(data.audio);
+                            break;
+                        
                         default:
                             console.log('Unknown message type:', data);
                     }
@@ -642,6 +711,8 @@
             const connectBtn = document.getElementById('wsConnectBtn');
             const disconnectBtn = document.getElementById('wsDisconnectBtn');
             const sendBtn = document.getElementById('wsSendBtn');
+            const voiceBtn = document.getElementById('voiceBtn');
+            const voiceChatBtn = document.getElementById('voiceChatBtn');
 
             if (connected) {
                 status.className = 'status connected';
@@ -649,12 +720,21 @@
                 connectBtn.disabled = true;
                 disconnectBtn.disabled = false;
                 sendBtn.disabled = false;
+                voiceBtn.disabled = false;
+                voiceChatBtn.disabled = false;
             } else {
                 status.className = 'status disconnected';
                 status.innerHTML = '<span class="status-dot"></span> Disconnected';
                 connectBtn.disabled = false;
                 disconnectBtn.disabled = true;
                 sendBtn.disabled = true;
+                voiceBtn.disabled = true;
+                voiceChatBtn.disabled = true;
+                
+                // Stop voice chat mode if active
+                if (voiceChatMode) {
+                    toggleVoiceChatMode();
+                }
             }
         }
 
@@ -686,7 +766,316 @@
             if (ws) {
                 ws.close();
             }
+            if (mediaRecorder && isRecording) {
+                mediaRecorder.stop();
+            }
         });
+
+        // Voice Recording Functions
+        async function toggleVoiceRecording() {
+            if (!ws || ws.readyState !== WebSocket.OPEN) {
+                alert('Please connect WebSocket first');
+                return;
+            }
+
+            if (isRecording) {
+                stopRecording();
+            } else {
+                startRecording();
+            }
+        }
+
+        async function startRecording() {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ 
+                    audio: {
+                        channelCount: 1,
+                        sampleRate: 16000,
+                        echoCancellation: true,
+                        noiseSuppression: true
+                    } 
+                });
+
+                audioChunks = [];
+                mediaRecorder = new MediaRecorder(stream, {
+                    mimeType: 'audio/webm'
+                });
+
+                mediaRecorder.ondataavailable = (event) => {
+                    if (event.data.size > 0) {
+                        audioChunks.push(event.data);
+                    }
+                };
+
+                mediaRecorder.onstop = async () => {
+                    const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
+                    
+                    // Stop silence detection
+                    if (silenceDetectionTimer) {
+                        clearInterval(silenceDetectionTimer);
+                        silenceDetectionTimer = null;
+                    }
+                    
+                    // Close audio context
+                    if (audioContext) {
+                        audioContext.close();
+                        audioContext = null;
+                        analyser = null;
+                    }
+                    
+                    // Stop all tracks
+                    stream.getTracks().forEach(track => track.stop());
+                    
+                    // Send to server
+                    await sendAudioToServer(audioBlob);
+                };
+
+                mediaRecorder.start();
+                isRecording = true;
+
+                // Set up silence detection for voice chat mode
+                if (voiceChatMode) {
+                    setupSilenceDetection(stream);
+                }
+
+                // Update button
+                const voiceBtn = document.getElementById('voiceBtn');
+                if (!voiceChatMode) {
+                    voiceBtn.textContent = '⏹️ Stop Recording';
+                    voiceBtn.classList.remove('warning');
+                    voiceBtn.classList.add('recording');
+                }
+
+                if (voiceChatMode) {
+                    addMessage('System', '🎤 Listening... (speak naturally, I\'ll respond when you pause)', 'system');
+                } else {
+                    addMessage('System', '🎤 Recording... Speak now!', 'system');
+                }
+
+            } catch (error) {
+                console.error('Error starting recording:', error);
+                addMessage('Error', `Microphone error: ${error.message}`, 'system');
+            }
+        }
+
+        function setupSilenceDetection(stream) {
+            try {
+                audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                analyser = audioContext.createAnalyser();
+                const source = audioContext.createMediaStreamSource(stream);
+                source.connect(analyser);
+                analyser.fftSize = 2048;
+                
+                const bufferLength = analyser.frequencyBinCount;
+                const dataArray = new Uint8Array(bufferLength);
+                
+                let silenceStart = Date.now();
+                let hasDetectedSpeech = false;
+                
+                silenceDetectionTimer = setInterval(() => {
+                    analyser.getByteTimeDomainData(dataArray);
+                    
+                    // Calculate average volume
+                    let sum = 0;
+                    for (let i = 0; i < bufferLength; i++) {
+                        const normalized = (dataArray[i] - 128) / 128;
+                        sum += normalized * normalized;
+                    }
+                    const rms = Math.sqrt(sum / bufferLength);
+                    
+                    if (rms > silenceThreshold) {
+                        // Speech detected
+                        silenceStart = Date.now();
+                        hasDetectedSpeech = true;
+                    } else if (hasDetectedSpeech) {
+                        // Silence detected after speech
+                        const silenceDuration = Date.now() - silenceStart;
+                        
+                        if (silenceDuration > silenceDelay) {
+                            // Auto-stop after silence
+                            console.log('Silence detected, auto-stopping recording');
+                            stopRecording();
+                        }
+                    }
+                }, 100); // Check every 100ms
+                
+            } catch (error) {
+                console.error('Error setting up silence detection:', error);
+            }
+        }
+
+        function stopRecording() {
+            if (mediaRecorder && isRecording) {
+                mediaRecorder.stop();
+                isRecording = false;
+
+                // Update button only if not in voice chat mode
+                if (!voiceChatMode) {
+                    const voiceBtn = document.getElementById('voiceBtn');
+                    voiceBtn.textContent = '🎤 Record Voice';
+                    voiceBtn.classList.remove('recording');
+                    voiceBtn.classList.add('warning');
+
+                    addMessage('System', '⏹️ Recording stopped. Processing...', 'system');
+                } else {
+                    addMessage('System', '🔄 Processing your message...', 'system');
+                }
+            }
+        }
+
+        async function sendAudioToServer(audioBlob) {
+            try {
+                // Convert blob to base64
+                const reader = new FileReader();
+                
+                reader.onloadend = () => {
+                    const base64Audio = reader.result.split(',')[1];
+                    
+                    // Send to WebSocket
+                    ws.send(JSON.stringify({
+                        type: 'audio_chunk',
+                        audio: base64Audio,
+                        stream: true,
+                        voice_response: true
+                    }));
+
+                    addMessage('System', '📤 Audio sent to server', 'system');
+                };
+
+                reader.readAsDataURL(audioBlob);
+
+            } catch (error) {
+                console.error('Error sending audio:', error);
+                addMessage('Error', `Failed to send audio: ${error.message}`, 'system');
+            }
+        }
+
+        function playAudioResponse(base64Audio) {
+            try {
+                // Stop any currently playing audio
+                if (currentAudio) {
+                    currentAudio.pause();
+                    currentAudio = null;
+                }
+
+                // Convert base64 to blob
+                const audioBlob = base64ToBlob(base64Audio, 'audio/mp3');
+                const audioUrl = URL.createObjectURL(audioBlob);
+                
+                // Create and play audio
+                currentAudio = new Audio(audioUrl);
+                isAgentSpeaking = true;
+                
+                currentAudio.play();
+
+                addMessage('System', '🔊 Playing voice response...', 'system');
+
+                currentAudio.onended = () => {
+                    URL.revokeObjectURL(audioUrl);
+                    isAgentSpeaking = false;
+                    currentAudio = null;
+                    
+                    // In voice chat mode, automatically start listening again
+                    if (voiceChatMode && !isRecording) {
+                        setTimeout(() => {
+                            if (voiceChatMode) { // Check again in case mode was disabled
+                                addMessage('System', '🎤 Listening for your response...', 'system');
+                                startRecording();
+                            }
+                        }, 500); // Small delay before next recording
+                    }
+                };
+
+                currentAudio.onerror = (error) => {
+                    console.error('Audio playback error:', error);
+                    addMessage('Error', 'Failed to play audio response', 'system');
+                    isAgentSpeaking = false;
+                    currentAudio = null;
+                };
+
+            } catch (error) {
+                console.error('Error playing audio:', error);
+                addMessage('Error', `Audio playback error: ${error.message}`, 'system');
+                isAgentSpeaking = false;
+            }
+        }
+
+        function base64ToBlob(base64, mimeType) {
+            const byteCharacters = atob(base64);
+            const byteNumbers = new Array(byteCharacters.length);
+            
+            for (let i = 0; i < byteCharacters.length; i++) {
+                byteNumbers[i] = byteCharacters.charCodeAt(i);
+            }
+            
+            const byteArray = new Uint8Array(byteNumbers);
+            return new Blob([byteArray], { type: mimeType });
+        }
+
+        // Voice Chat Mode - Continuous 2-way conversation
+        async function toggleVoiceChatMode() {
+            if (!ws || ws.readyState !== WebSocket.OPEN) {
+                alert('Please connect WebSocket first');
+                return;
+            }
+
+            voiceChatMode = !voiceChatMode;
+            
+            const voiceChatBtn = document.getElementById('voiceChatBtn');
+            const voiceModeStatus = document.getElementById('voiceModeStatus');
+            const voiceBtn = document.getElementById('voiceBtn');
+            
+            if (voiceChatMode) {
+                // Enable voice chat mode
+                voiceChatBtn.textContent = '⏹️ End Voice Chat';
+                voiceChatBtn.style.background = '#dc2626';
+                voiceModeStatus.style.display = 'inline';
+                voiceBtn.disabled = true; // Disable single record button
+                
+                addMessage('System', '🗣️ Voice Chat STARTED - Speak naturally, I will respond automatically when you pause.', 'system');
+                
+                // Start first recording immediately
+                setTimeout(() => {
+                    if (voiceChatMode) {
+                        startRecording();
+                    }
+                }, 800);
+                
+            } else {
+                // Disable voice chat mode
+                voiceChatBtn.textContent = '🗣️ Voice Chat Mode';
+                voiceChatBtn.style.background = '#8b5cf6';
+                voiceModeStatus.style.display = 'none';
+                voiceBtn.disabled = false; // Re-enable single record button
+                
+                // Stop any active recording
+                if (isRecording) {
+                    stopRecording();
+                }
+                
+                // Stop silence detection
+                if (silenceDetectionTimer) {
+                    clearInterval(silenceDetectionTimer);
+                    silenceDetectionTimer = null;
+                }
+                
+                // Close audio context
+                if (audioContext) {
+                    audioContext.close();
+                    audioContext = null;
+                    analyser = null;
+                }
+                
+                // Stop any playing audio
+                if (currentAudio) {
+                    currentAudio.pause();
+                    currentAudio = null;
+                    isAgentSpeaking = false;
+                }
+                
+                addMessage('System', '⏹️ Voice Chat ENDED - Conversation terminated.', 'system');
+            }
+        }
     </script>
 </body>
 </html>

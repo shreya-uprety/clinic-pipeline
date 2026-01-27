@@ -19,18 +19,29 @@ Date: January 27, 2026
 import asyncio
 import json
 import logging
+import base64
+import io
 from typing import Dict, Optional, Any, Set
 from datetime import datetime
 from fastapi import WebSocket, WebSocketDisconnect
 from enum import Enum
 import uuid
 
+# Configure logging first (before any usage)
+logger = logging.getLogger("websocket-agent")
+
+# Google Cloud APIs for voice
+try:
+    from google.cloud import speech_v1 as speech
+    from google.cloud import texttospeech
+    VOICE_ENABLED = True
+except ImportError:
+    VOICE_ENABLED = False
+    logger.warning("Voice features disabled: google-cloud-speech and google-cloud-texttospeech not installed")
+
 # Import existing agents
 from my_agents import PreConsulteAgent
 from chat_agent import ChatAgent
-
-# Configure logging
-logger = logging.getLogger("websocket-agent")
 
 
 class MessageType(str, Enum):
@@ -46,6 +57,12 @@ class MessageType(str, Enum):
     STREAM_START = "stream_start"
     STREAM_CHUNK = "stream_chunk"
     STREAM_END = "stream_end"
+    # Voice communication types
+    AUDIO_START = "audio_start"
+    AUDIO_CHUNK = "audio_chunk"
+    AUDIO_END = "audio_end"
+    AUDIO_RESPONSE = "audio_response"
+    TRANSCRIPTION = "transcription"
 
 
 class ConnectionState(str, Enum):
@@ -294,6 +311,109 @@ class WebSocketLiveAgent:
         
         return self.chat_agents[patient_id]
     
+    def _initialize_voice_clients(self):
+        """Initialize Google Cloud Speech and TTS clients."""
+        if not VOICE_ENABLED:
+            return None, None
+        
+        try:
+            import os
+            project_id = os.getenv("PROJECT_ID")
+            
+            speech_client = speech.SpeechClient()
+            tts_client = texttospeech.TextToSpeechClient()
+            
+            logger.info("Voice clients initialized successfully")
+            return speech_client, tts_client
+        except Exception as e:
+            logger.error(f"Failed to initialize voice clients: {e}")
+            return None, None
+    
+    async def _transcribe_audio(self, audio_data: bytes, language_code: str = "en-US") -> str:
+        """
+        Transcribe audio to text using Google Cloud Speech-to-Text.
+        
+        Args:
+            audio_data: Raw audio bytes (WAV format recommended)
+            language_code: Language code for transcription
+            
+        Returns:
+            Transcribed text
+        """
+        if not VOICE_ENABLED:
+            raise Exception("Voice features not available. Install: pip install google-cloud-speech google-cloud-texttospeech")
+        
+        try:
+            speech_client, _ = self._initialize_voice_clients()
+            if not speech_client:
+                raise Exception("Speech client initialization failed")
+            
+            audio = speech.RecognitionAudio(content=audio_data)
+            config = speech.RecognitionConfig(
+                encoding=speech.RecognitionConfig.AudioEncoding.WEBM_OPUS,
+                sample_rate_hertz=48000,  # Match browser recording rate
+                language_code=language_code,
+                enable_automatic_punctuation=True,
+            )
+            
+            response = speech_client.recognize(config=config, audio=audio)
+            
+            # Combine all transcription results
+            transcript = " ".join([result.alternatives[0].transcript for result in response.results])
+            
+            logger.info(f"Transcribed audio: {transcript[:100]}...")
+            return transcript
+            
+        except Exception as e:
+            logger.error(f"Transcription error: {e}")
+            raise
+    
+    async def _synthesize_speech(self, text: str, language_code: str = "en-US", voice_name: str = "en-US-Neural2-F") -> bytes:
+        """
+        Synthesize text to speech using Google Cloud Text-to-Speech.
+        
+        Args:
+            text: Text to synthesize
+            language_code: Language code
+            voice_name: Voice model name
+            
+        Returns:
+            Audio bytes (MP3 format)
+        """
+        if not VOICE_ENABLED:
+            raise Exception("Voice features not available. Install: pip install google-cloud-speech google-cloud-texttospeech")
+        
+        try:
+            _, tts_client = self._initialize_voice_clients()
+            if not tts_client:
+                raise Exception("TTS client initialization failed")
+            
+            synthesis_input = texttospeech.SynthesisInput(text=text)
+            
+            voice = texttospeech.VoiceSelectionParams(
+                language_code=language_code,
+                name=voice_name
+            )
+            
+            audio_config = texttospeech.AudioConfig(
+                audio_encoding=texttospeech.AudioEncoding.MP3,
+                speaking_rate=1.0,
+                pitch=0.0
+            )
+            
+            response = tts_client.synthesize_speech(
+                input=synthesis_input,
+                voice=voice,
+                audio_config=audio_config
+            )
+            
+            logger.info(f"Synthesized speech: {len(response.audio_content)} bytes")
+            return response.audio_content
+            
+        except Exception as e:
+            logger.error(f"TTS error: {e}")
+            raise
+    
     async def handle_connection(self, websocket: WebSocket, patient_id: str, agent_type: str = "pre_consult"):
         """
         Handle WebSocket connection lifecycle.
@@ -413,11 +533,17 @@ class WebSocketLiveAgent:
             data: Message data
         """
         try:
+            # Check if this is a voice message
+            if data.get("type") == MessageType.AUDIO_CHUNK.value:
+                await self._handle_voice_message(session, data)
+                return
+            
             # Get or create chat agent for this patient
             chat_agent = self.get_or_create_chat_agent(session.patient_id)
             
             user_message = data.get("message", "")
             stream_response = data.get("stream", True)  # Default to streaming
+            voice_response = data.get("voice_response", False)  # Whether to return audio
             
             if stream_response:
                 # Stream response
@@ -428,12 +554,14 @@ class WebSocketLiveAgent:
                 
                 await session.send_typing_indicator(True)
                 
+                full_response = ""
                 async for chunk in chat_agent.chat_stream(user_message):
                     await session.send_json({
                         "type": MessageType.STREAM_CHUNK.value,
                         "content": chunk,
                         "timestamp": datetime.now().isoformat()
                     })
+                    full_response += chunk
                 
                 await session.send_typing_indicator(False)
                 
@@ -441,6 +569,21 @@ class WebSocketLiveAgent:
                     "type": MessageType.STREAM_END.value,
                     "timestamp": datetime.now().isoformat()
                 })
+                
+                # If voice response requested, synthesize and send
+                if voice_response and VOICE_ENABLED:
+                    try:
+                        audio_bytes = await self._synthesize_speech(full_response)
+                        audio_base64 = base64.b64encode(audio_bytes).decode('utf-8')
+                        
+                        await session.send_json({
+                            "type": MessageType.AUDIO_RESPONSE.value,
+                            "audio": audio_base64,
+                            "format": "mp3",
+                            "timestamp": datetime.now().isoformat()
+                        })
+                    except Exception as e:
+                        logger.error(f"Voice synthesis failed: {e}")
             else:
                 # Non-streaming response
                 await session.send_typing_indicator(True)
@@ -454,12 +597,68 @@ class WebSocketLiveAgent:
                     "content": response,
                     "timestamp": datetime.now().isoformat()
                 })
+                
+                # If voice response requested, synthesize and send
+                if voice_response and VOICE_ENABLED:
+                    try:
+                        audio_bytes = await self._synthesize_speech(response)
+                        audio_base64 = base64.b64encode(audio_bytes).decode('utf-8')
+                        
+                        await session.send_json({
+                            "type": MessageType.AUDIO_RESPONSE.value,
+                            "audio": audio_base64,
+                            "format": "mp3",
+                            "timestamp": datetime.now().isoformat()
+                        })
+                    except Exception as e:
+                        logger.error(f"Voice synthesis failed: {e}")
             
             logger.info(f"Chat response sent to session {session.session_id}")
             
         except Exception as e:
             logger.error(f"Error handling chat message: {e}")
             await session.send_error(f"Failed to process chat: {str(e)}")
+    
+    async def _handle_voice_message(self, session: WebSocketSession, data: Dict[str, Any]):
+        """
+        Handle voice/audio message from client.
+        
+        Args:
+            session: WebSocket session
+            data: Message data with audio
+        """
+        try:
+            # Get audio data (base64 encoded)
+            audio_base64 = data.get("audio", "")
+            audio_bytes = base64.b64decode(audio_base64)
+            
+            # Send transcription status
+            await session.send_json({
+                "type": MessageType.STATUS.value,
+                "status": "transcribing",
+                "message": "Transcribing audio..."
+            })
+            
+            # Transcribe audio to text
+            transcript = await self._transcribe_audio(audio_bytes)
+            
+            # Send transcription back to client
+            await session.send_json({
+                "type": MessageType.TRANSCRIPTION.value,
+                "content": transcript,
+                "timestamp": datetime.now().isoformat()
+            })
+            
+            # Process the transcribed text as a normal message
+            await self._handle_chat_message(session, {
+                "message": transcript,
+                "stream": data.get("stream", True),
+                "voice_response": True  # Automatically return voice
+            })
+            
+        except Exception as e:
+            logger.error(f"Error handling voice message: {e}")
+            await session.send_error(f"Voice processing failed: {str(e)}")
     
     async def broadcast_to_patient(self, patient_id: str, message: str, msg_type: MessageType = MessageType.TEXT):
         """
