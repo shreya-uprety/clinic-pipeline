@@ -1,6 +1,9 @@
 import os
 from google.cloud import storage
 from google.cloud.exceptions import NotFound, GoogleCloudError
+from dotenv import load_dotenv
+
+load_dotenv()
 
 class GCSBucketManager:
     def __init__(self, bucket_name, service_account_json_path=None):
@@ -13,11 +16,15 @@ class GCSBucketManager:
                                           or default environment auth.
         """
         try:
+            project_id = os.getenv("PROJECT_ID")
             if service_account_json_path:
-                self.client = storage.Client.from_service_account_json(service_account_json_path)
+                self.client = storage.Client.from_service_account_json(
+                    service_account_json_path,
+                    project=project_id
+                )
             else:
                 # Looks for credentials in environment variables
-                self.client = storage.Client()
+                self.client = storage.Client(project=project_id)
             
             self.bucket_name = bucket_name
             self.bucket = self.client.bucket(bucket_name)

@@ -1,6 +1,6 @@
 import uvicorn
 import logging
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi import FastAPI, HTTPException, BackgroundTasks, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional, List
@@ -14,6 +14,10 @@ import schedule_manager
 import bucket_ops
 import traceback
 import uuid
+
+# Import new agent modules
+from chat_agent import ChatAgent
+from websocket_agent import websocket_pre_consult_endpoint, websocket_chat_endpoint, websocket_agent
 
 # Configure Logging
 logging.basicConfig(level=logging.INFO)
@@ -273,6 +277,153 @@ async def reset_chat_history(patient_id: str):
     except Exception as e:
         logger.error(f"Error resetting chat for {patient_id}: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to reset chat: {str(e)}")
+
+
+# --- NEW: General Chat Agent Endpoints ---
+
+class GeneralChatRequest(BaseModel):
+    """Request model for general chat agent."""
+    patient_id: str
+    message: str
+    use_tools: Optional[bool] = True
+
+
+class GeneralChatResponse(BaseModel):
+    """Response model for general chat agent."""
+    patient_id: str
+    response: str
+    status: str
+
+
+@app.post("/api/chat", response_model=GeneralChatResponse)
+async def general_chat(request: GeneralChatRequest):
+    """
+    General-purpose chat endpoint with RAG and tool execution.
+    Use this for medical Q&A, data retrieval, and analysis.
+    
+    Supports:
+    - RAG (Retrieval-Augmented Generation) from patient data
+    - Tool execution (get labs, medications, encounters, etc.)
+    - Conversation history management
+    """
+    try:
+        # Create or retrieve chat agent for this patient
+        agent = ChatAgent(patient_id=request.patient_id, use_tools=request.use_tools)
+        
+        # Get response
+        response_text = await agent.chat(request.message)
+        
+        # Save conversation history
+        agent.save_history()
+        
+        return GeneralChatResponse(
+            patient_id=request.patient_id,
+            response=response_text,
+            status="success"
+        )
+        
+    except Exception as e:
+        logger.error(f"General chat error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/chat/{patient_id}/history")
+async def get_general_chat_history(patient_id: str):
+    """
+    Get conversation history for general chat agent.
+    """
+    try:
+        agent = ChatAgent(patient_id=patient_id, use_tools=False)
+        history = agent.get_history()
+        
+        return {
+            "patient_id": patient_id,
+            "history": history,
+            "message_count": len(history)
+        }
+        
+    except Exception as e:
+        logger.error(f"Error retrieving chat history: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/chat/{patient_id}/clear")
+async def clear_general_chat_history(patient_id: str):
+    """
+    Clear conversation history for general chat agent.
+    """
+    try:
+        agent = ChatAgent(patient_id=patient_id, use_tools=False)
+        agent.clear_history()
+        
+        return {
+            "status": "success",
+            "message": "Chat history cleared"
+        }
+        
+    except Exception as e:
+        logger.error(f"Error clearing chat history: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# --- NEW: WebSocket Endpoints ---
+
+@app.websocket("/ws/pre-consult/{patient_id}")
+async def websocket_pre_consult(websocket: WebSocket, patient_id: str):
+    """
+    WebSocket endpoint for real-time pre-consultation chat (Linda the admin).
+    
+    Provides:
+    - Real-time bidirectional communication
+    - Typing indicators
+    - Form and slot offerings
+    - Attachment handling
+    
+    Client should send JSON messages with format:
+    {
+        "message": "user message text",
+        "attachments": ["filename1.png", ...],
+        "form_data": {...}
+    }
+    """
+    await websocket_pre_consult_endpoint(websocket, patient_id)
+
+
+@app.websocket("/ws/chat/{patient_id}")
+async def websocket_chat(websocket: WebSocket, patient_id: str):
+    """
+    WebSocket endpoint for real-time general chat with RAG + tools.
+    
+    Provides:
+    - Streaming responses
+    - Real-time tool execution
+    - RAG-enhanced answers
+    - Session persistence
+    
+    Client should send JSON messages with format:
+    {
+        "message": "user question",
+        "stream": true  // optional, defaults to true
+    }
+    """
+    await websocket_chat_endpoint(websocket, patient_id)
+
+
+@app.get("/ws/sessions")
+async def get_active_websocket_sessions():
+    """
+    Get information about all active WebSocket sessions.
+    Useful for monitoring and debugging.
+    """
+    try:
+        sessions = websocket_agent.get_active_sessions()
+        return {
+            "active_sessions": len(sessions),
+            "sessions": sessions
+        }
+    except Exception as e:
+        logger.error(f"Error getting session info: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/process/{patient_id}/preconsult")

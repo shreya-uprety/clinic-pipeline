@@ -25,9 +25,7 @@ IMAGE_MODEL2 = "gemini-2.5-flash-image"
 class BaseLogicAgent:
     def __init__(self):
         self.client = genai.Client(
-            vertexai=True, 
-            project=os.getenv("PROJECT_ID"), 
-            location=os.getenv("PROJECT_LOCATION", "us-central1")
+            api_key=os.getenv("GOOGLE_API_KEY")
             )
 
 
