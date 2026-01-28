@@ -279,13 +279,21 @@ class ToolExecutor:
                 self.gcs.read_file_as_string(f"patient_data/{patient_id}/board_items/dashboard_lab_track.json")
             )
             
+            # Handle both list and dict formats
+            if isinstance(lab_data, list):
+                biomarkers = lab_data
+            elif isinstance(lab_data, dict):
+                biomarkers = lab_data.get("biomarkers", [])
+            else:
+                biomarkers = []
+            
             if biomarker:
                 # Filter for specific biomarker
-                filtered = [item for item in lab_data.get("biomarkers", []) 
+                filtered = [item for item in biomarkers 
                            if biomarker.lower() in item.get("name", "").lower()]
                 return {"status": "success", "biomarkers": filtered, "count": len(filtered)}
             
-            return {"status": "success", **lab_data}
+            return {"status": "success", "biomarkers": biomarkers, "count": len(biomarkers)}
         except Exception as e:
             logger.warning(f"No lab data for patient {patient_id}: {e}")
             return {"status": "not_found", "message": f"No laboratory results found for patient {patient_id}."}
