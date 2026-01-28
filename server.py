@@ -48,13 +48,13 @@ except Exception as e:
     ChatAgent = None
 
 try:
-    from websocket_agent import websocket_pre_consult_endpoint, websocket_chat_endpoint, websocket_agent
+    from websocket_agent import websocket_pre_consult_endpoint, websocket_chat_endpoint, get_websocket_agent
     logger.info("✅ websocket_agent imported successfully")
 except Exception as e:
     logger.error(f"❌ Failed to import websocket_agent: {e}")
     websocket_pre_consult_endpoint = None
     websocket_chat_endpoint = None
-    websocket_agent = None
+    get_websocket_agent = None
 
 try:
     from voice_websocket_handler import VoiceWebSocketHandler
@@ -524,11 +524,15 @@ async def get_active_websocket_sessions():
     Get information about all active WebSocket sessions.
     Useful for monitoring and debugging.
     """
-    if websocket_agent is None:
+    if get_websocket_agent is None:
+        return {"error": "WebSocket agent not available", "sessions": []}
+    
+    agent = get_websocket_agent()
+    if agent is None:
         return {"error": "WebSocket agent not available", "sessions": []}
     
     try:
-        sessions = websocket_agent.get_active_sessions()
+        sessions = agent.get_active_sessions()
         return {
             "active_sessions": len(sessions),
             "sessions": sessions

@@ -283,7 +283,15 @@ class WebSocketLiveAgent:
     def __init__(self):
         """Initialize WebSocket live agent."""
         self.connection_manager = WebSocketConnectionManager()
-        self.pre_consult_agent = PreConsulteAgent()
+        self.pre_consult_agent = None
+        self.gemini_client = None
+        
+        # Try to initialize PreConsulteAgent
+        try:
+            self.pre_consult_agent = PreConsulteAgent()
+            logger.info("✅ PreConsulteAgent initialized in WebSocketLiveAgent")
+        except Exception as e:
+            logger.warning(f"⚠️ PreConsulteAgent initialization failed: {e}")
         
         # Cache chat agents per patient for session persistence
         self.chat_agents: Dict[str, ChatAgent] = {}
@@ -291,10 +299,16 @@ class WebSocketLiveAgent:
         # Gemini Live sessions cache (per WebSocket session)
         self.gemini_live_sessions: Dict[str, Any] = {}
         
-        # Initialize Gemini client for Live API
-        self.gemini_client = genai.Client(
-            api_key=os.getenv("GOOGLE_API_KEY")
-        )
+        # Try to initialize Gemini client for Live API
+        try:
+            api_key = os.getenv("GOOGLE_API_KEY")
+            if api_key:
+                self.gemini_client = genai.Client(api_key=api_key)
+                logger.info("✅ Gemini client initialized in WebSocketLiveAgent")
+            else:
+                logger.warning("⚠️ GOOGLE_API_KEY not found")
+        except Exception as e:
+            logger.warning(f"⚠️ Gemini client initialization failed: {e}")
     
     def get_or_create_chat_agent(self, patient_id: str, use_tools: bool = True) -> ChatAgent:
         """
@@ -761,8 +775,21 @@ use the available tools to retrieve it."""
         return self.connection_manager.get_all_sessions_info()
 
 
-# Global instance for FastAPI integration
-websocket_agent = WebSocketLiveAgent()
+# Global instance for FastAPI integration - lazy initialization
+websocket_agent = None
+
+def get_websocket_agent():
+    """Get or create the global WebSocket agent instance."""
+    global websocket_agent
+    if websocket_agent is None:
+        try:
+            websocket_agent = WebSocketLiveAgent()
+            logger.info("✅ WebSocketLiveAgent instance created")
+        except Exception as e:
+            logger.error(f"❌ Failed to create WebSocketLiveAgent: {e}")
+            # Return a dummy object that won't crash
+            return None
+    return websocket_agent
 
 
 # FastAPI WebSocket endpoint handlers
