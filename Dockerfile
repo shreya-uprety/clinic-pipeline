@@ -1,14 +1,13 @@
 FROM python:3.11-slim
 
-# Install system dependencies required for some python packages
-# (We shouldn't need audio libs, but this prevents some build errors)
+# Install system dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-# Copy requirements first to leverage Docker cache
+# Copy requirements first for caching
 COPY requirements.txt .
 
 # Install dependencies
@@ -19,5 +18,8 @@ COPY . .
 
 RUN mkdir -p output
 
-# Cloud Run expects the app to listen on the $PORT environment variable
-CMD exec uvicorn server:app --host 0.0.0.0 --port ${PORT:-8080}
+# Expose port 8080 for documentation
+EXPOSE 8080
+
+# Start the app using exec form (so $PORT is expanded by the shell)
+CMD ["sh", "-c", "uvicorn server:app --host 0.0.0.0 --port ${PORT:-8080}"]
