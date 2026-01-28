@@ -7,6 +7,7 @@ from typing import Optional, List
 import json
 import base64 
 import pandas as pd
+import os
 # Import your agent class
 import my_agents
 from my_agents import PreConsulteAgent
@@ -727,4 +728,6 @@ async def get_available_slots(doctor_type: Optional[str] = "General"):
 # --- Run Block ---
 if __name__ == "__main__":
     # Run with: python server.py
-    uvicorn.run("server:app", host="0.0.0.0", port=8000, reload=True)
+    port = int(os.environ.get("PORT", 8080))
+
+    uvicorn.run("server:app", host="0.0.0.0", port=port, reload=True)
