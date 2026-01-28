@@ -1,16 +1,21 @@
 fastapi==0.101.0
 uvicorn[standard]==0.23.2
-websockets==11.0.3
+
+# WebSockets (compatible with google-genai)
+websockets>=13.0.0,<15.1.0
+
 python-dotenv==1.2.1
 requests==2.32.5
 grpcio==1.76.0
 mutagen==1.47.0
 pillow==12.1.0
 pandas==3.0.0
-# Google Cloud dependencies (install before google-genai to avoid namespace conflicts)
+
+# Google Cloud dependencies
 google-auth>=2.23.3
 google-cloud-storage==2.14.0
 google-cloud-speech==2.24.0
 google-cloud-aiplatform==1.38.1
-# Google GenAI SDK (must be after google-cloud packages)
+
+# Google GenAI SDK
 google-genai==1.60.0
