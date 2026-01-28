@@ -16,10 +16,12 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy the rest of the application
 COPY . .
 
+# Ensure output directory exists
 RUN mkdir -p output
 
-# Expose port 8080 for documentation
+# Expose port for documentation
 EXPOSE 8080
 
-# Start the app using exec form (so $PORT is expanded by the shell)
-CMD ["sh", "-c", "uvicorn server:app --host 0.0.0.0 --port ${PORT:-8080}"]
+# Start the app using uvicorn in the recommended Cloud Run way
+ENV PORT=8080
+CMD ["uvicorn", "server:app", "--host", "0.0.0.0", "--port", "8080", "--reload"]
