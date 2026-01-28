@@ -39,9 +39,32 @@ app.add_middleware(
 
 # Initialize the Agent
 # We instantiate it once so we don't reconnect to GCS/VertexAI on every request
-chat_agent = PreConsulteAgent()
+try:
+    chat_agent = PreConsulteAgent()
+    logger.info("✅ PreConsulteAgent initialized successfully")
+except Exception as e:
+    logger.warning(f"⚠️ PreConsulteAgent initialization failed: {e}")
+    chat_agent = None
 
-gcs = bucket_ops.GCSBucketManager(bucket_name="clinic_sim")
+try:
+    gcs = bucket_ops.GCSBucketManager(bucket_name="clinic_sim")
+    logger.info("✅ GCS Bucket Manager initialized successfully")
+except Exception as e:
+    logger.warning(f"⚠️ GCS Bucket Manager initialization failed: {e}")
+    gcs = None
+
+
+# Startup event
+@app.on_event("startup")
+async def startup_event():
+    """Log startup information"""
+    port = os.environ.get("PORT", "8080")
+    logger.info("=" * 60)
+    logger.info("🚀 MedForce Clinic Sim Pipeline Starting")
+    logger.info(f"📍 Listening on port: {port}")
+    logger.info(f"🏥 PreConsulteAgent: {'Ready' if chat_agent else 'Not Available'}")
+    logger.info(f"☁️ GCS Manager: {'Ready' if gcs else 'Not Available'}")
+    logger.info("=" * 60)
 
 
 # --- Pydantic Models ---
@@ -118,6 +141,15 @@ class ChatResponse(BaseModel):
 @app.get("/")
 async def root():
     return {"status": "MedForce Server is Running"}
+
+@app.get("/health")
+async def health_check():
+    """Health check endpoint for Cloud Run"""
+    return {
+        "status": "healthy",
+        "service": "clinic-sim-pipeline",
+        "port": os.environ.get("PORT", 8080)
+    }
 
 @app.post("/chat", response_model=ChatResponse)
 async def handle_chat(payload: ChatRequest):
@@ -730,4 +762,4 @@ if __name__ == "__main__":
     # Run with: python server.py
     port = int(os.environ.get("PORT", 8080))
 
-    uvicorn.run("server:app", host="0.0.0.0", port=port, reload=True)
+    uvicorn.run("server:app", host="0.0.0.0", port=port, log_level="info")

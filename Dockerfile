@@ -33,5 +33,13 @@ RUN mkdir -p output
 # Expose port 8080 (Cloud Run default)
 EXPOSE 8080
 
-# Use exec form to ensure proper signal handling
-CMD exec uvicorn server:app --host 0.0.0.0 --port ${PORT:-8080} --workers 1
+# Set default PORT if not provided
+ENV PORT=8080
+
+# Add healthcheck
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+    CMD curl -f http://localhost:$PORT/health || exit 1
+
+# Use shell form to properly expand environment variable
+CMD echo "Starting server on port $PORT..." && \
+    uvicorn server:app --host 0.0.0.0 --port $PORT --timeout-keep-alive 30 --log-level info
