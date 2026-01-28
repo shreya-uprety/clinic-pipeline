@@ -18,6 +18,7 @@ import uuid
 # Import new agent modules
 from chat_agent import ChatAgent
 from websocket_agent import websocket_pre_consult_endpoint, websocket_chat_endpoint, websocket_agent
+from voice_websocket_handler import VoiceWebSocketHandler
 
 # Configure Logging
 logging.basicConfig(level=logging.INFO)
@@ -407,6 +408,27 @@ async def websocket_chat(websocket: WebSocket, patient_id: str):
     }
     """
     await websocket_chat_endpoint(websocket, patient_id)
+
+
+@app.websocket("/ws/voice/{patient_id}")
+async def websocket_voice(websocket: WebSocket, patient_id: str):
+    """
+    WebSocket endpoint for real-time voice communication using Gemini Live API.
+    
+    Provides:
+    - Continuous bidirectional audio streaming
+    - Native speech-to-text and text-to-speech
+    - Real-time tool execution during conversation
+    - Low-latency voice interaction
+    
+    Client should send raw PCM audio bytes (16kHz, mono, 16-bit).
+    Server will respond with raw PCM audio bytes (24kHz, mono, 16-bit).
+    """
+    await websocket.accept()
+    logger.info(f"🎙️ Voice WebSocket connected for patient: {patient_id}")
+    
+    handler = VoiceWebSocketHandler(websocket, patient_id)
+    await handler.run()
 
 
 @app.get("/ws/sessions")

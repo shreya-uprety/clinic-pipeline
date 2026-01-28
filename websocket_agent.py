@@ -26,18 +26,15 @@ from datetime import datetime
 from fastapi import WebSocket, WebSocketDisconnect
 from enum import Enum
 import uuid
+import os
+from google import genai
 
 # Configure logging first (before any usage)
 logger = logging.getLogger("websocket-agent")
 
-# Google Cloud APIs for voice
-try:
-    from google.cloud import speech_v1 as speech
-    from google.cloud import texttospeech
-    VOICE_ENABLED = True
-except ImportError:
-    VOICE_ENABLED = False
-    logger.warning("Voice features disabled: google-cloud-speech and google-cloud-texttospeech not installed")
+# Gemini Live API configuration
+GEMINI_LIVE_MODEL = "gemini-live-2.5-flash-preview-native-audio-09-2025"
+VOICE_ENABLED = True  # Gemini Live handles audio natively
 
 # Import existing agents
 from my_agents import PreConsulteAgent
@@ -290,6 +287,14 @@ class WebSocketLiveAgent:
         
         # Cache chat agents per patient for session persistence
         self.chat_agents: Dict[str, ChatAgent] = {}
+        
+        # Gemini Live sessions cache (per WebSocket session)
+        self.gemini_live_sessions: Dict[str, Any] = {}
+        
+        # Initialize Gemini client for Live API
+        self.gemini_client = genai.Client(
+            api_key=os.getenv("GOOGLE_API_KEY")
+        )
     
     def get_or_create_chat_agent(self, patient_id: str, use_tools: bool = True) -> ChatAgent:
         """
@@ -311,107 +316,73 @@ class WebSocketLiveAgent:
         
         return self.chat_agents[patient_id]
     
-    def _initialize_voice_clients(self):
-        """Initialize Google Cloud Speech and TTS clients."""
-        if not VOICE_ENABLED:
-            return None, None
-        
-        try:
-            import os
-            project_id = os.getenv("PROJECT_ID")
-            
-            speech_client = speech.SpeechClient()
-            tts_client = texttospeech.TextToSpeechClient()
-            
-            logger.info("Voice clients initialized successfully")
-            return speech_client, tts_client
-        except Exception as e:
-            logger.error(f"Failed to initialize voice clients: {e}")
-            return None, None
-    
-    async def _transcribe_audio(self, audio_data: bytes, language_code: str = "en-US") -> str:
+    async def _create_gemini_live_session(self, session_id: str, patient_id: str):
         """
-        Transcribe audio to text using Google Cloud Speech-to-Text.
+        Create Gemini Live API session for real-time audio processing.
         
         Args:
-            audio_data: Raw audio bytes (WAV format recommended)
-            language_code: Language code for transcription
-            
-        Returns:
-            Transcribed text
+            session_id: WebSocket session ID
+            patient_id: Patient identifier
         """
-        if not VOICE_ENABLED:
-            raise Exception("Voice features not available. Install: pip install google-cloud-speech google-cloud-texttospeech")
-        
         try:
-            speech_client, _ = self._initialize_voice_clients()
-            if not speech_client:
-                raise Exception("Speech client initialization failed")
+            # Get system prompt for medical context
+            system_instruction = f"""You are an expert medical AI assistant specializing in hepatology and clinical care.
+            You're currently helping with patient {patient_id}.
             
-            audio = speech.RecognitionAudio(content=audio_data)
-            config = speech.RecognitionConfig(
-                encoding=speech.RecognitionConfig.AudioEncoding.WEBM_OPUS,
-                sample_rate_hertz=48000,  # Match browser recording rate
-                language_code=language_code,
-                enable_automatic_punctuation=True,
+Your capabilities:
+1. Answer medical questions using patient context
+2. Retrieve specific data using available tools
+3. Provide evidence-based clinical reasoning
+4. Maintain natural conversation flow
+
+Guidelines:
+- Speak naturally and conversationally (you're having a voice call)
+- Be concise but thorough in your responses
+- Use medical terminology appropriately but explain complex terms
+- Reference specific patient data when available
+- Ask clarifying questions when needed
+"""
+            
+            # Gemini Live configuration
+            config = {
+                "response_modalities": ["AUDIO"],
+                "system_instruction": system_instruction,
+                "speech_config": {
+                    "voice_config": {
+                        "prebuilt_voice_config": {
+                            "voice_name": "Charon"  # Professional voice
+                        }
+                    },
+                    "language_code": "en-US"
+                },
+                "realtime_input_config": {
+                    "automatic_activity_detection": {
+                        "disabled": False,
+                        "start_of_speech_sensitivity": "START_SENSITIVITY_LOW",
+                        "end_of_speech_sensitivity": "END_SENSITIVITY_LOW",
+                        "prefix_padding_ms": 200,
+                        "silence_duration_ms": 2000  # 2 seconds of silence
+                    }
+                }
+            }
+            
+            # Create Gemini Live session
+            live_session = self.gemini_client.aio.live.connect(
+                model=GEMINI_LIVE_MODEL,
+                config=config
             )
             
-            response = speech_client.recognize(config=config, audio=audio)
+            self.gemini_live_sessions[session_id] = {
+                "session": live_session,
+                "patient_id": patient_id,
+                "audio_queue": asyncio.Queue()
+            }
             
-            # Combine all transcription results
-            transcript = " ".join([result.alternatives[0].transcript for result in response.results])
-            
-            logger.info(f"Transcribed audio: {transcript[:100]}...")
-            return transcript
+            logger.info(f"Created Gemini Live session for {session_id}")
+            return live_session
             
         except Exception as e:
-            logger.error(f"Transcription error: {e}")
-            raise
-    
-    async def _synthesize_speech(self, text: str, language_code: str = "en-US", voice_name: str = "en-US-Neural2-F") -> bytes:
-        """
-        Synthesize text to speech using Google Cloud Text-to-Speech.
-        
-        Args:
-            text: Text to synthesize
-            language_code: Language code
-            voice_name: Voice model name
-            
-        Returns:
-            Audio bytes (MP3 format)
-        """
-        if not VOICE_ENABLED:
-            raise Exception("Voice features not available. Install: pip install google-cloud-speech google-cloud-texttospeech")
-        
-        try:
-            _, tts_client = self._initialize_voice_clients()
-            if not tts_client:
-                raise Exception("TTS client initialization failed")
-            
-            synthesis_input = texttospeech.SynthesisInput(text=text)
-            
-            voice = texttospeech.VoiceSelectionParams(
-                language_code=language_code,
-                name=voice_name
-            )
-            
-            audio_config = texttospeech.AudioConfig(
-                audio_encoding=texttospeech.AudioEncoding.MP3,
-                speaking_rate=1.0,
-                pitch=0.0
-            )
-            
-            response = tts_client.synthesize_speech(
-                input=synthesis_input,
-                voice=voice,
-                audio_config=audio_config
-            )
-            
-            logger.info(f"Synthesized speech: {len(response.audio_content)} bytes")
-            return response.audio_content
-            
-        except Exception as e:
-            logger.error(f"TTS error: {e}")
+            logger.error(f"Failed to create Gemini Live session: {e}")
             raise
     
     async def handle_connection(self, websocket: WebSocket, patient_id: str, agent_type: str = "pre_consult"):
@@ -570,20 +541,9 @@ class WebSocketLiveAgent:
                     "timestamp": datetime.now().isoformat()
                 })
                 
-                # If voice response requested, synthesize and send
-                if voice_response and VOICE_ENABLED:
-                    try:
-                        audio_bytes = await self._synthesize_speech(full_response)
-                        audio_base64 = base64.b64encode(audio_bytes).decode('utf-8')
-                        
-                        await session.send_json({
-                            "type": MessageType.AUDIO_RESPONSE.value,
-                            "audio": audio_base64,
-                            "format": "mp3",
-                            "timestamp": datetime.now().isoformat()
-                        })
-                    except Exception as e:
-                        logger.error(f"Voice synthesis failed: {e}")
+                # Note: For voice responses, use audio_chunk message type instead
+                # Voice is handled natively through Gemini Live API
+
             else:
                 # Non-streaming response
                 await session.send_typing_indicator(True)
@@ -598,20 +558,9 @@ class WebSocketLiveAgent:
                     "timestamp": datetime.now().isoformat()
                 })
                 
-                # If voice response requested, synthesize and send
-                if voice_response and VOICE_ENABLED:
-                    try:
-                        audio_bytes = await self._synthesize_speech(response)
-                        audio_base64 = base64.b64encode(audio_bytes).decode('utf-8')
-                        
-                        await session.send_json({
-                            "type": MessageType.AUDIO_RESPONSE.value,
-                            "audio": audio_base64,
-                            "format": "mp3",
-                            "timestamp": datetime.now().isoformat()
-                        })
-                    except Exception as e:
-                        logger.error(f"Voice synthesis failed: {e}")
+                # Note: For voice responses, use audio_chunk message type instead
+                # Voice is handled natively through Gemini Live API
+
             
             logger.info(f"Chat response sent to session {session.session_id}")
             
@@ -621,7 +570,7 @@ class WebSocketLiveAgent:
     
     async def _handle_voice_message(self, session: WebSocketSession, data: Dict[str, Any]):
         """
-        Handle voice/audio message from client.
+        Handle voice/audio message from client using Gemini Live API.
         
         Args:
             session: WebSocket session
@@ -632,33 +581,160 @@ class WebSocketLiveAgent:
             audio_base64 = data.get("audio", "")
             audio_bytes = base64.b64decode(audio_base64)
             
-            # Send transcription status
+            # Send processing status
             await session.send_json({
                 "type": MessageType.STATUS.value,
-                "status": "transcribing",
-                "message": "Transcribing audio..."
+                "status": "processing",
+                "message": "Processing audio..."
             })
             
-            # Transcribe audio to text
-            transcript = await self._transcribe_audio(audio_bytes)
+            # Get or create Gemini Live session for this patient
+            gemini_session = await self._get_or_create_live_session(session.patient_id)
             
-            # Send transcription back to client
+            # Send audio to Gemini Live
+            await gemini_session.send(input=audio_bytes)
+            
+            # Receive and process responses
+            full_text = ""
+            audio_chunks = []
+            
+            async for response in gemini_session.receive():
+                # Handle server content (text/audio from Gemini)
+                if response.server_content:
+                    # Check for model turn (includes both text and audio)
+                    if response.server_content.model_turn:
+                        for part in response.server_content.model_turn.parts:
+                            # Handle text responses
+                            if hasattr(part, 'text') and part.text:
+                                full_text += part.text
+                                # Stream text chunks back to client
+                                await session.send_json({
+                                    "type": MessageType.STREAM_CHUNK.value,
+                                    "content": part.text,
+                                    "timestamp": datetime.now().isoformat()
+                                })
+                            
+                            # Handle inline audio responses
+                            if hasattr(part, 'inline_data') and part.inline_data:
+                                audio_data = part.inline_data.data
+                                audio_chunks.append(audio_data)
+                                # Stream audio chunks back to client
+                                audio_base64 = base64.b64encode(audio_data).decode('utf-8')
+                                await session.send_json({
+                                    "type": MessageType.AUDIO_RESPONSE.value,
+                                    "audio": audio_base64,
+                                    "format": "pcm",
+                                    "timestamp": datetime.now().isoformat()
+                                })
+                    
+                    # Handle tool calls
+                    if response.server_content.turn_complete:
+                        # Check if there are any tool calls to execute
+                        for part in response.server_content.model_turn.parts:
+                            if hasattr(part, 'function_call') and part.function_call:
+                                # Execute tool call in background
+                                asyncio.create_task(
+                                    self._handle_tool_call(gemini_session, part.function_call, session)
+                                )
+                        break  # Turn is complete
+            
+            # Send completion status
             await session.send_json({
-                "type": MessageType.TRANSCRIPTION.value,
-                "content": transcript,
-                "timestamp": datetime.now().isoformat()
+                "type": MessageType.STATUS.value,
+                "status": "complete",
+                "message": "Processing complete"
             })
             
-            # Process the transcribed text as a normal message
-            await self._handle_chat_message(session, {
-                "message": transcript,
-                "stream": data.get("stream", True),
-                "voice_response": True  # Automatically return voice
-            })
+            logger.info(f"Voice message processed for session {session.session_id}")
             
         except Exception as e:
-            logger.error(f"Error handling voice message: {e}")
+            logger.error(f"Error handling voice message with Gemini Live: {e}")
             await session.send_error(f"Voice processing failed: {str(e)}")
+    
+    async def _get_or_create_live_session(self, patient_id: str):
+        """
+        Get or create a Gemini Live session for a patient.
+        
+        Args:
+            patient_id: Patient identifier
+            
+        Returns:
+            Gemini Live session
+        """
+        if patient_id not in self.gemini_live_sessions:
+            # Get patient context for system instruction
+            patient_data = await self.gcs_bucket_manager.get_patient_data(patient_id)
+            
+            # Create comprehensive system instruction
+            system_instruction = f"""You are a helpful medical assistant for patient {patient_id}.
+
+Patient Information:
+{json.dumps(patient_data.get('basic_info', {}), indent=2)}
+
+Your capabilities:
+- Answer questions about the patient's medical history
+- Explain lab results and medications
+- Provide general medical information
+- Schedule appointments or consultations
+
+Always be professional, empathetic, and accurate. If you need to access specific data,
+use the available tools to retrieve it."""
+            
+            # Create new Gemini Live session
+            session = await self._create_gemini_live_session(system_instruction)
+            self.gemini_live_sessions[patient_id] = session
+        
+        return self.gemini_live_sessions[patient_id]
+    
+    async def _handle_tool_call(self, gemini_session, function_call, websocket_session: WebSocketSession):
+        """
+        Handle tool/function calls from Gemini Live.
+        
+        Args:
+            gemini_session: Gemini Live session
+            function_call: Function call from Gemini
+            websocket_session: WebSocket session for notifications
+        """
+        try:
+            function_name = function_call.name
+            function_args = dict(function_call.args)
+            
+            # Notify client that tool is being executed
+            await websocket_session.send_json({
+                "type": MessageType.STATUS.value,
+                "status": "tool_execution",
+                "message": f"Executing {function_name}..."
+            })
+            
+            # Execute the tool using ChatAgent's tool execution
+            chat_agent = self.get_or_create_chat_agent(websocket_session.patient_id)
+            result = await chat_agent._execute_tool_call(function_name, function_args)
+            
+            # Send result back to Gemini Live session
+            await gemini_session.send(
+                tool_response={
+                    "function_responses": [{
+                        "id": function_call.id,
+                        "name": function_name,
+                        "response": {"result": result}
+                    }]
+                }
+            )
+            
+            logger.info(f"Tool {function_name} executed successfully")
+            
+        except Exception as e:
+            logger.error(f"Error executing tool {function_name}: {e}")
+            # Send error back to Gemini
+            await gemini_session.send(
+                tool_response={
+                    "function_responses": [{
+                        "id": function_call.id,
+                        "name": function_name,
+                        "response": {"error": str(e)}
+                    }]
+                }
+            )
     
     async def broadcast_to_patient(self, patient_id: str, message: str, msg_type: MessageType = MessageType.TEXT):
         """

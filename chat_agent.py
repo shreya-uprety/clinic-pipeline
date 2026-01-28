@@ -283,11 +283,12 @@ class ToolExecutor:
                 # Filter for specific biomarker
                 filtered = [item for item in lab_data.get("biomarkers", []) 
                            if biomarker.lower() in item.get("name", "").lower()]
-                return {"biomarkers": filtered}
+                return {"status": "success", "biomarkers": filtered, "count": len(filtered)}
             
-            return lab_data
+            return {"status": "success", **lab_data}
         except Exception as e:
-            return {"error": f"Could not retrieve lab data: {e}"}
+            logger.warning(f"No lab data for patient {patient_id}: {e}")
+            return {"status": "not_found", "message": f"No laboratory results found for patient {patient_id}."}
     
     def get_patient_medications(self, patient_id: str, active_only: bool = False) -> Dict[str, Any]:
         """Retrieve patient medications."""
@@ -301,11 +302,12 @@ class ToolExecutor:
                 current_date = datetime.now().isoformat()
                 filtered = [med for med in med_data.get("medications", [])
                            if not med.get("endDate") or med.get("endDate") > current_date]
-                return {"medications": filtered}
+                return {"status": "success", "medications": filtered, "count": len(filtered)}
             
-            return med_data
+            return {"status": "success", **med_data}
         except Exception as e:
-            return {"error": f"Could not retrieve medication data: {e}"}
+            logger.warning(f"No medication data for patient {patient_id}: {e}")
+            return {"status": "not_found", "message": f"No medication records found for patient {patient_id}."}
     
     def get_patient_encounters(self, patient_id: str, limit: int = 10) -> Dict[str, Any]:
         """Retrieve patient encounters."""
@@ -314,10 +316,25 @@ class ToolExecutor:
                 self.gcs.read_file_as_string(f"patient_data/{patient_id}/board_items/encounters.json")
             )
             
-            encounters = encounter_data.get("encounters", [])[:limit]
-            return {"encounters": encounters}
+            # Handle both list and dict formats
+            if isinstance(encounter_data, list):
+                encounters = encounter_data[:limit]
+            elif isinstance(encounter_data, dict):
+                encounters = encounter_data.get("encounters", [])[:limit]
+            else:
+                encounters = []
+            
+            return {
+                "status": "success",
+                "encounters": encounters,
+                "count": len(encounters)
+            }
         except Exception as e:
-            return {"error": f"Could not retrieve encounter data: {e}"}
+            logger.warning(f"No encounter data for patient {patient_id}: {e}")
+            return {
+                "status": "not_found",
+                "message": f"No encounter records found for patient {patient_id}. This patient may not have any documented encounters yet."
+            }
     
     def search_patient_data(self, patient_id: str, query: str) -> Dict[str, Any]:
         """Search patient data for query."""
