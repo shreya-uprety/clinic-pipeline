@@ -38,7 +38,12 @@ class VoiceWebSocketHandler:
     def get_system_instruction(self):
         """Get system instruction for this patient"""
         return f"""You are an expert medical AI assistant specializing in hepatology and clinical care.
-You're currently helping with patient {self.patient_id}.
+
+CRITICAL CONTEXT - REMEMBER THIS THROUGHOUT THE ENTIRE CONVERSATION:
+- You are currently helping with patient ID: {self.patient_id}
+- This patient ID never changes during this conversation
+- When asked about test results, labs, medications, or any patient data, use patient ID: {self.patient_id}
+- NEVER ask for patient ID - you already know it is {self.patient_id}
 
 Your capabilities:
 1. Answer medical questions using patient context
@@ -47,11 +52,14 @@ Your capabilities:
 4. Maintain natural conversation flow
 
 Guidelines:
+- ALWAYS respond in English only. Never use Hindi or any other language.
 - Speak naturally and conversationally (you're having a voice call)
 - Be concise but thorough in your responses
 - Use medical terminology appropriately but explain complex terms
 - Reference specific patient data when available
 - Ask clarifying questions when needed
+- When using tools like get_patient_labs, get_patient_encounters, etc., ALWAYS use patient_id: {self.patient_id}
+- If the user says "stop" or "stop talking", immediately acknowledge and ask what they need
 """
     
     def get_config(self):
@@ -138,13 +146,40 @@ Guidelines:
             except:
                 pass
     
+    async def stop_speaking(self):
+        """Stop current Gemini response and clear audio queue"""
+        logger.info("🛑 Stop button pressed")
+        self.should_stop = True
+        # Clear audio queue immediately
+        cleared = 0
+        while not self.audio_in_queue.empty():
+            try:
+                self.audio_in_queue.get_nowait()
+                cleared += 1
+            except asyncio.QueueEmpty:
+                break
+        logger.info(f"✅ Stopped speaking, cleared {cleared} chunks")
+    
     async def listen_audio(self):
         """Receive audio from WebSocket and send to Gemini"""
         logger.info("🎤 Listening to client audio...")
         try:
             while True:
-                data = await self.websocket.receive_bytes()
-                await self.out_queue.put({"data": data, "mime_type": "audio/pcm"})
+                message = await self.websocket.receive()
+                
+                # Check for stop command
+                if "text" in message:
+                    try:
+                        data = json.loads(message["text"])
+                        if data.get("type") == "stop":
+                            await self.stop_speaking()
+                            continue
+                    except:
+                        pass
+                
+                if "bytes" in message:
+                    data = message["bytes"]
+                    await self.out_queue.put({"data": data, "mime_type": "audio/pcm"})
         except WebSocketDisconnect:
             logger.info("Client disconnected")
             raise asyncio.CancelledError()
@@ -169,23 +204,14 @@ Guidelines:
                 turn = self.session.receive()
                 
                 async for response in turn:
-                    # Handle interruptions
-                    if response.server_content and response.server_content.interrupted:
-                        logger.info("🛑 Interrupted! Clearing queue...")
-                        while not self.audio_in_queue.empty():
-                            try:
-                                self.audio_in_queue.get_nowait()
-                            except asyncio.QueueEmpty:
-                                break
-                        continue
-                    
-                    # Handle audio data
+                    # Handle audio data - stream immediately for low latency
                     if data := response.data:
                         self.audio_in_queue.put_nowait(data)
                     
                     # Handle tool calls
                     if hasattr(response, 'tool_call') and response.tool_call:
                         await self.handle_tool_call(response.tool_call)
+                        
         except Exception as e:
             logger.error(f"Error receiving audio: {e}")
             traceback.print_exc()

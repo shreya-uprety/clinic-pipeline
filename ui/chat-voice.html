@@ -680,7 +680,6 @@
                 ws = null;
             }
             if (currentMode === 'voice') {
-                clearAudioQueue();
                 cleanupAudio();
             }
         }
@@ -727,22 +726,29 @@
                 processAudioQueue();
                 visualizeAudio(new Int16Array(event.data));
             }
+            // Backend handles all interruption logic via Gemini Live API
         }
         
         async function processAudioQueue() {
-            // If already playing, queue will be processed when current finishes
-            if (isPlayingAudio || audioPlaybackQueue.length === 0) {
+            // Strict lock - if already playing, just return and let current process finish
+            if (isPlayingAudio) {
                 return;
             }
             
+            // Set lock immediately
             isPlayingAudio = true;
             
-            while (audioPlaybackQueue.length > 0) {
-                const audioData = audioPlaybackQueue.shift();
-                await playAudioBuffer(audioData);
+            try {
+                while (audioPlaybackQueue.length > 0) {
+                    const audioData = audioPlaybackQueue.shift();
+                    await playAudioBuffer(audioData);
+                }
+            } catch (e) {
+                console.error('Error processing audio queue:', e);
+            } finally {
+                // Always release lock
+                isPlayingAudio = false;
             }
-            
-            isPlayingAudio = false;
         }
         
         function clearAudioQueue() {
@@ -812,6 +818,8 @@
                         pcmData[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
                     }
                     
+                    // Just send audio - no automatic interruption
+                    // User can say "stop" or click the button to interrupt
                     ws.send(pcmData.buffer);
                     visualizeAudio(pcmData);
                 };
@@ -852,9 +860,6 @@
                 btn.textContent = '⏹️';
                 document.getElementById('voiceVisualizer').classList.add('active');
                 log('🎤 Voice activated - speak now!', 'system');
-                
-                // Clear any queued audio when user starts speaking (interruption)
-                clearAudioQueue();
             } else {
                 btn.classList.remove('voice-active', 'danger');
                 btn.classList.add('success');
@@ -876,8 +881,14 @@
 
         async function playAudioBuffer(audioData) {
             try {
+                // Ensure audio context is ready
                 if (!audioContext || audioContext.state === 'closed') {
                     audioContext = new AudioContext({ sampleRate: 24000 });
+                }
+                
+                // Resume if suspended
+                if (audioContext.state === 'suspended') {
+                    await audioContext.resume();
                 }
                 
                 const pcmData = new Int16Array(audioData);
@@ -898,17 +909,35 @@
                 // Store reference for interruption
                 currentAudioSource = source;
                 
-                // Wait for this chunk to finish before playing next
-                await new Promise((resolve) => {
+                // Wait for this chunk to finish before returning
+                await new Promise((resolve, reject) => {
+                    let resolved = false;
+                    
                     source.onended = () => {
-                        currentAudioSource = null;
-                        resolve();
+                        if (!resolved) {
+                            resolved = true;
+                            currentAudioSource = null;
+                            resolve();
+                        }
                     };
-                    source.start();
+                    
+                    // Timeout fallback in case onended doesn't fire
+                    const duration = audioBuffer.duration * 1000 + 100; // duration in ms + buffer
+                    setTimeout(() => {
+                        if (!resolved) {
+                            resolved = true;
+                            currentAudioSource = null;
+                            resolve();
+                        }
+                    }, duration);
+                    
+                    source.start(0);
                 });
                 
             } catch (error) {
-                console.error('Playback error:', error);
+                console.error('Error playing audio buffer:', error);
+                currentAudioSource = null;
+                // Don't throw - continue to next chunk
             }
         }
 

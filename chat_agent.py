@@ -305,14 +305,22 @@ class ToolExecutor:
                 self.gcs.read_file_as_string(f"patient_data/{patient_id}/board_items/dashboard_medication_track.json")
             )
             
+            # Handle both list and dict formats
+            if isinstance(med_data, list):
+                medications = med_data
+            elif isinstance(med_data, dict):
+                medications = med_data.get("medications", [])
+            else:
+                medications = []
+            
             if active_only:
                 # Filter for active medications (no end date or future end date)
                 current_date = datetime.now().isoformat()
-                filtered = [med for med in med_data.get("medications", [])
+                filtered = [med for med in medications
                            if not med.get("endDate") or med.get("endDate") > current_date]
                 return {"status": "success", "medications": filtered, "count": len(filtered)}
             
-            return {"status": "success", **med_data}
+            return {"status": "success", "medications": medications, "count": len(medications)}
         except Exception as e:
             logger.warning(f"No medication data for patient {patient_id}: {e}")
             return {"status": "not_found", "message": f"No medication records found for patient {patient_id}."}
@@ -357,9 +365,9 @@ class ToolExecutor:
             for file_path in files:
                 try:
                     content = self.gcs.read_file_as_string(file_path)
-                    if query.lower() in content.lower():
+                    if content and query.lower() in content.lower():
                         results.append({
-                            "source": file_path.split("/")[-1],
+                            "source": file_path.split("/")[-1] if file_path else "unknown",
                             "snippet": self._extract_snippet(content, query)
                         })
                 except:
@@ -551,11 +559,14 @@ When patient context is provided, use it to give personalized answers."""
                             tool_result = {"result": tool_result}
                         
                         # Send tool result back to model
+                        # Filter out None parts from the response content
+                        model_parts = [p for p in response.candidates[0].content.parts if p is not None]
+                        
                         follow_up = await self.client.aio.models.generate_content(
                             model=MODEL,
                             contents=[
                                 full_message,
-                                response.candidates[0].content,
+                                types.Content(role="model", parts=model_parts),
                                 types.Part.from_function_response(
                                     name=part.function_call.name,
                                     response=tool_result
@@ -641,11 +652,14 @@ When patient context is provided, use it to give personalized answers."""
                             tool_result = {"result": tool_result}
                         
                         # Send tool result back to model
+                        # Filter out None parts from the response content
+                        model_parts = [p for p in response.candidates[0].content.parts if p is not None]
+                        
                         follow_up = await self.client.aio.models.generate_content(
                             model=MODEL,
                             contents=[
                                 full_message,
-                                response.candidates[0].content,
+                                types.Content(role="model", parts=model_parts),
                                 types.Part.from_function_response(
                                     name=part.function_call.name,
                                     response=tool_result
@@ -658,7 +672,13 @@ When patient context is provided, use it to give personalized answers."""
                         )
                         response = follow_up
             
-            complete_response = response.text
+            complete_response = response.text if response and hasattr(response, 'text') and response.text else ""
+            
+            # Handle empty or None response
+            if not complete_response:
+                logger.error("Stream error: Empty or None response from model")
+                yield "I apologize, but I couldn't generate a response. Please try asking your question again."
+                return
             
             # Simulate streaming by yielding in chunks
             chunk_size = 5  # Words per chunk
