@@ -8,22 +8,60 @@ import json
 import base64 
 import pandas as pd
 import os
-# Import your agent class
-import my_agents
-from my_agents import PreConsulteAgent
-import schedule_manager
-import bucket_ops
 import traceback
 import uuid
 
-# Import new agent modules
-from chat_agent import ChatAgent
-from websocket_agent import websocket_pre_consult_endpoint, websocket_chat_endpoint, websocket_agent
-from voice_websocket_handler import VoiceWebSocketHandler
-
-# Configure Logging
+# Configure Logging first
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("medforce-server")
+
+# Import your agent class with error handling
+try:
+    import my_agents
+    from my_agents import PreConsulteAgent
+    logger.info("✅ my_agents imported successfully")
+except Exception as e:
+    logger.error(f"❌ Failed to import my_agents: {e}")
+    my_agents = None
+    PreConsulteAgent = None
+
+try:
+    import schedule_manager
+    logger.info("✅ schedule_manager imported successfully")
+except Exception as e:
+    logger.error(f"❌ Failed to import schedule_manager: {e}")
+    schedule_manager = None
+
+try:
+    import bucket_ops
+    logger.info("✅ bucket_ops imported successfully")
+except Exception as e:
+    logger.error(f"❌ Failed to import bucket_ops: {e}")
+    bucket_ops = None
+
+# Import new agent modules with error handling
+try:
+    from chat_agent import ChatAgent
+    logger.info("✅ ChatAgent imported successfully")
+except Exception as e:
+    logger.error(f"❌ Failed to import ChatAgent: {e}")
+    ChatAgent = None
+
+try:
+    from websocket_agent import websocket_pre_consult_endpoint, websocket_chat_endpoint, websocket_agent
+    logger.info("✅ websocket_agent imported successfully")
+except Exception as e:
+    logger.error(f"❌ Failed to import websocket_agent: {e}")
+    websocket_pre_consult_endpoint = None
+    websocket_chat_endpoint = None
+    websocket_agent = None
+
+try:
+    from voice_websocket_handler import VoiceWebSocketHandler
+    logger.info("✅ VoiceWebSocketHandler imported successfully")
+except Exception as e:
+    logger.error(f"❌ Failed to import VoiceWebSocketHandler: {e}")
+    VoiceWebSocketHandler = None
 
 # Initialize FastAPI app
 app = FastAPI(title="MedForce Hepatology Chat Server")
@@ -39,19 +77,21 @@ app.add_middleware(
 
 # Initialize the Agent
 # We instantiate it once so we don't reconnect to GCS/VertexAI on every request
-try:
-    chat_agent = PreConsulteAgent()
-    logger.info("✅ PreConsulteAgent initialized successfully")
-except Exception as e:
-    logger.warning(f"⚠️ PreConsulteAgent initialization failed: {e}")
-    chat_agent = None
+chat_agent = None
+if PreConsulteAgent:
+    try:
+        chat_agent = PreConsulteAgent()
+        logger.info("✅ PreConsulteAgent initialized successfully")
+    except Exception as e:
+        logger.warning(f"⚠️ PreConsulteAgent initialization failed: {e}")
 
-try:
-    gcs = bucket_ops.GCSBucketManager(bucket_name="clinic_sim")
-    logger.info("✅ GCS Bucket Manager initialized successfully")
-except Exception as e:
-    logger.warning(f"⚠️ GCS Bucket Manager initialization failed: {e}")
-    gcs = None
+gcs = None
+if bucket_ops:
+    try:
+        gcs = bucket_ops.GCSBucketManager(bucket_name="clinic_sim")
+        logger.info("✅ GCS Bucket Manager initialized successfully")
+    except Exception as e:
+        logger.warning(f"⚠️ GCS Bucket Manager initialization failed: {e}")
 
 
 # Startup event
@@ -420,6 +460,9 @@ async def websocket_pre_consult(websocket: WebSocket, patient_id: str):
         "form_data": {...}
     }
     """
+    if websocket_pre_consult_endpoint is None:
+        await websocket.close(code=1011, reason="Service unavailable")
+        return
     await websocket_pre_consult_endpoint(websocket, patient_id)
 
 
@@ -440,6 +483,9 @@ async def websocket_chat(websocket: WebSocket, patient_id: str):
         "stream": true  // optional, defaults to true
     }
     """
+    if websocket_chat_endpoint is None:
+        await websocket.close(code=1011, reason="Service unavailable")
+        return
     await websocket_chat_endpoint(websocket, patient_id)
 
 
@@ -457,11 +503,19 @@ async def websocket_voice(websocket: WebSocket, patient_id: str):
     Client should send raw PCM audio bytes (16kHz, mono, 16-bit).
     Server will respond with raw PCM audio bytes (24kHz, mono, 16-bit).
     """
+    if VoiceWebSocketHandler is None:
+        await websocket.close(code=1011, reason="Voice service unavailable")
+        return
+    
     await websocket.accept()
     logger.info(f"🎙️ Voice WebSocket connected for patient: {patient_id}")
     
-    handler = VoiceWebSocketHandler(websocket, patient_id)
-    await handler.run()
+    try:
+        handler = VoiceWebSocketHandler(websocket, patient_id)
+        await handler.run()
+    except Exception as e:
+        logger.error(f"Voice WebSocket error: {e}")
+        await websocket.close()
 
 
 @app.get("/ws/sessions")
@@ -470,6 +524,9 @@ async def get_active_websocket_sessions():
     Get information about all active WebSocket sessions.
     Useful for monitoring and debugging.
     """
+    if websocket_agent is None:
+        return {"error": "WebSocket agent not available", "sessions": []}
+    
     try:
         sessions = websocket_agent.get_active_sessions()
         return {

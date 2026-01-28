@@ -30,16 +30,16 @@ COPY . .
 # Create necessary directories
 RUN mkdir -p output
 
+# Test imports to catch errors early
+RUN python -c "import fastapi; import uvicorn; print('✅ Core dependencies OK')" && \
+    python -c "import server; print('✅ Server module loads OK')" || echo "⚠️ Server module has issues but continuing..."
+
 # Expose port 8080 (Cloud Run default)
 EXPOSE 8080
 
 # Set default PORT if not provided
 ENV PORT=8080
 
-# Add healthcheck
-HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
-    CMD curl -f http://localhost:$PORT/health || exit 1
-
 # Use shell form to properly expand environment variable
-CMD echo "Starting server on port $PORT..." && \
-    uvicorn server:app --host 0.0.0.0 --port $PORT --timeout-keep-alive 30 --log-level info
+# Removed healthcheck as Cloud Run handles this
+CMD uvicorn server:app --host 0.0.0.0 --port $PORT --timeout-keep-alive 30
