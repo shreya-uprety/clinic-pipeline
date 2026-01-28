@@ -13,7 +13,8 @@ Features:
 - Connection state tracking
 
 Author: AI Developer Assistant
-Date: January 27, 2026
+Date: January 28, 2026
+Version: 2.0 - Lazy initialization for Cloud Run compatibility
 """
 
 import asyncio
@@ -775,19 +776,26 @@ use the available tools to retrieve it."""
         return self.connection_manager.get_all_sessions_info()
 
 
-# Global instance for FastAPI integration - lazy initialization
+# Global instance for FastAPI integration - LAZY INITIALIZATION (DO NOT instantiate here!)
+# This prevents crashes when credentials are missing at import time
 websocket_agent = None
 
 def get_websocket_agent():
-    """Get or create the global WebSocket agent instance."""
+    """
+    Get or create the global WebSocket agent instance.
+    Lazy initialization prevents import-time crashes.
+    """
     global websocket_agent
     if websocket_agent is None:
         try:
+            logger.info("Initializing WebSocketLiveAgent...")
             websocket_agent = WebSocketLiveAgent()
-            logger.info("✅ WebSocketLiveAgent instance created")
+            logger.info("✅ WebSocketLiveAgent instance created successfully")
         except Exception as e:
             logger.error(f"❌ Failed to create WebSocketLiveAgent: {e}")
-            # Return a dummy object that won't crash
+            import traceback
+            traceback.print_exc()
+            # Return None - caller must handle this
             return None
     return websocket_agent
 
