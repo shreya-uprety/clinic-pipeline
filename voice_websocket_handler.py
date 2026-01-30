@@ -140,9 +140,9 @@ Assist the clinician with patient care. Communicate only in English. Be concise.
                 "automatic_activity_detection": {
                     "disabled": False,
                     "start_of_speech_sensitivity": "START_SENSITIVITY_LOW",
-                    "end_of_speech_sensitivity": "END_SENSITIVITY_LOW",
-                    "prefix_padding_ms": 200,
-                    "silence_duration_ms": 2000
+                    "end_of_speech_sensitivity": "END_SENSITIVITY_HIGH",
+                    "prefix_padding_ms": 150,
+                    "silence_duration_ms": 700
                 }
             }
         }
