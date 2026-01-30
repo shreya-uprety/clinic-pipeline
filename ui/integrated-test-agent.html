@@ -1,0 +1,742 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MedForce Agent - Integrated Chat & Voice</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 20px;
+        }
+
+        .container {
+            background: white;
+            border-radius: 20px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            max-width: 1400px;
+            width: 100%;
+            height: 90vh;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 20px 30px;
+            border-radius: 20px 20px 0 0;
+        }
+
+        .header h1 {
+            font-size: 24px;
+            margin-bottom: 10px;
+        }
+
+        .patient-info {
+            display: flex;
+            gap: 20px;
+            align-items: center;
+            margin-top: 10px;
+        }
+
+        .patient-select {
+            padding: 8px 12px;
+            border-radius: 8px;
+            border: none;
+            background: rgba(255, 255, 255, 0.2);
+            color: white;
+            font-size: 14px;
+            cursor: pointer;
+        }
+
+        .patient-select option {
+            background: #667eea;
+            color: white;
+        }
+
+        .board-link {
+            color: white;
+            text-decoration: none;
+            font-size: 14px;
+            opacity: 0.9;
+        }
+
+        .board-link:hover {
+            opacity: 1;
+            text-decoration: underline;
+        }
+
+        .main-content {
+            display: flex;
+            flex: 1;
+            overflow: hidden;
+        }
+
+        .chat-section {
+            flex: 2;
+            display: flex;
+            flex-direction: column;
+            border-right: 1px solid #e0e0e0;
+        }
+
+        .tools-section {
+            flex: 1;
+            padding: 20px;
+            background: #f9f9f9;
+            overflow-y: auto;
+        }
+
+        .messages {
+            flex: 1;
+            overflow-y: auto;
+            padding: 20px;
+            background: #fafafa;
+        }
+
+        .message {
+            margin-bottom: 16px;
+            display: flex;
+            gap: 12px;
+        }
+
+        .message.user {
+            justify-content: flex-end;
+        }
+
+        .message-bubble {
+            max-width: 70%;
+            padding: 12px 16px;
+            border-radius: 18px;
+            line-height: 1.5;
+        }
+
+        .user .message-bubble {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border-bottom-right-radius: 4px;
+        }
+
+        .assistant .message-bubble {
+            background: white;
+            color: #333;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+            border-bottom-left-radius: 4px;
+        }
+
+        .input-area {
+            padding: 20px;
+            background: white;
+            border-top: 1px solid #e0e0e0;
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
+
+        .input-area input {
+            flex: 1;
+            padding: 12px 16px;
+            border: 2px solid #e0e0e0;
+            border-radius: 24px;
+            font-size: 14px;
+            outline: none;
+            transition: border-color 0.3s;
+        }
+
+        .input-area input:focus {
+            border-color: #667eea;
+        }
+
+        .btn {
+            padding: 12px 24px;
+            border: none;
+            border-radius: 24px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .btn-primary {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+
+        .btn-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+        }
+
+        .btn-secondary {
+            background: #f0f0f0;
+            color: #333;
+        }
+
+        .btn-secondary:hover {
+            background: #e0e0e0;
+        }
+
+        .btn-voice {
+            background: #ff6b6b;
+            color: white;
+        }
+
+        .btn-voice:hover {
+            background: #ee5a52;
+        }
+
+        .btn-voice.active {
+            background: #51cf66;
+            animation: pulse 1.5s infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.7; }
+        }
+
+        .tools-section h3 {
+            font-size: 18px;
+            margin-bottom: 16px;
+            color: #333;
+        }
+
+        .tool-group {
+            margin-bottom: 24px;
+        }
+
+        .tool-group h4 {
+            font-size: 14px;
+            color: #666;
+            margin-bottom: 12px;
+            font-weight: 600;
+        }
+
+        .tool-btn {
+            width: 100%;
+            padding: 12px;
+            margin-bottom: 8px;
+            border: 2px solid #e0e0e0;
+            border-radius: 12px;
+            background: white;
+            color: #333;
+            font-size: 14px;
+            cursor: pointer;
+            transition: all 0.3s;
+            text-align: left;
+        }
+
+        .tool-btn:hover {
+            border-color: #667eea;
+            background: #f0f4ff;
+            transform: translateX(4px);
+        }
+
+        .status {
+            padding: 8px 12px;
+            border-radius: 8px;
+            font-size: 12px;
+            display: inline-block;
+        }
+
+        .status.connected {
+            background: #51cf66;
+            color: white;
+        }
+
+        .status.disconnected {
+            background: #ff6b6b;
+            color: white;
+        }
+
+        .status.processing {
+            background: #ffd43b;
+            color: #333;
+        }
+
+        .example-queries {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            padding: 12px 20px;
+            background: #f9f9f9;
+            border-bottom: 1px solid #e0e0e0;
+        }
+
+        .example-query {
+            padding: 6px 12px;
+            border-radius: 16px;
+            background: white;
+            border: 1px solid #e0e0e0;
+            font-size: 12px;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+
+        .example-query:hover {
+            background: #667eea;
+            color: white;
+            border-color: #667eea;
+        }
+
+        .loading {
+            display: inline-block;
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: #667eea;
+            animation: bounce 1.4s infinite ease-in-out both;
+        }
+
+        .loading:nth-child(1) { animation-delay: -0.32s; }
+        .loading:nth-child(2) { animation-delay: -0.16s; }
+
+        @keyframes bounce {
+            0%, 80%, 100% { transform: scale(0); }
+            40% { transform: scale(1); }
+        }
+
+        .voice-status {
+            padding: 12px;
+            background: #f0f4ff;
+            border-radius: 8px;
+            margin-bottom: 16px;
+            font-size: 13px;
+        }
+
+        .mode-toggle {
+            display: flex;
+            gap: 8px;
+            padding: 12px 20px;
+            background: #f9f9f9;
+            border-bottom: 1px solid #e0e0e0;
+        }
+
+        .mode-btn {
+            flex: 1;
+            padding: 8px;
+            border: 2px solid #e0e0e0;
+            border-radius: 8px;
+            background: white;
+            cursor: pointer;
+            font-size: 13px;
+            transition: all 0.3s;
+        }
+
+        .mode-btn.active {
+            background: #667eea;
+            color: white;
+            border-color: #667eea;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🏥 MedForce Agent - Integrated Chat & Voice</h1>
+            <div class="patient-info">
+                <select class="patient-select" id="patientSelect">
+                    <option value="p0001">Patient P0001</option>
+                    <option value="p0002">Patient P0002</option>
+                    <option value="p0003">Patient P0003</option>
+                </select>
+                <a href="#" class="board-link" id="boardLink" target="_blank">📊 View Board</a>
+                <span class="status disconnected" id="wsStatus">Disconnected</span>
+            </div>
+        </div>
+
+        <div class="mode-toggle">
+            <button class="mode-btn active" id="chatModeBtn">💬 Chat Mode</button>
+            <button class="mode-btn" id="voiceModeBtn">🎤 Voice Mode</button>
+        </div>
+
+        <div class="example-queries">
+            <button class="example-query" onclick="sendQuery('Tell me about the patient')">Tell me about the patient</button>
+            <button class="example-query" onclick="sendQuery('What are the latest lab results?')">Latest lab results</button>
+            <button class="example-query" onclick="sendQuery('Show medication timeline')">Medication timeline</button>
+            <button class="example-query" onclick="sendQuery('What does EASL recommend for DILI?')">EASL guidelines</button>
+            <button class="example-query" onclick="sendQuery('Create task to follow up on labs')">Create task</button>
+        </div>
+
+        <div class="main-content">
+            <div class="chat-section">
+                <div class="messages" id="messages"></div>
+                <div class="input-area">
+                    <input type="text" id="userInput" placeholder="Type your message..." />
+                    <button class="btn btn-primary" id="sendBtn" onclick="sendMessage()">Send</button>
+                    <button class="btn btn-voice" id="voiceBtn" onclick="toggleVoice()">🎤 Voice</button>
+                </div>
+            </div>
+
+            <div class="tools-section">
+                <h3>🛠️ Quick Actions</h3>
+
+                <div class="voice-status" id="voiceStatus" style="display: none;">
+                    <strong>Voice Status:</strong> <span id="voiceState">Inactive</span>
+                </div>
+
+                <div class="tool-group">
+                    <h4>📋 Generate Reports</h4>
+                    <button class="tool-btn" onclick="generateDiagnosis()">🔬 Generate DILI Diagnosis</button>
+                    <button class="tool-btn" onclick="generateReport()">📄 Generate Patient Report</button>
+                    <button class="tool-btn" onclick="generateLegal()">⚖️ Generate Legal Report</button>
+                </div>
+
+                <div class="tool-group">
+                    <h4>🎯 Common Queries</h4>
+                    <button class="tool-btn" onclick="sendQuery('Analyze the patient risk profile')">Risk Analysis</button>
+                    <button class="tool-btn" onclick="sendQuery('What are the recent encounters?')">Recent Encounters</button>
+                    <button class="tool-btn" onclick="sendQuery('Check liver function trends')">Liver Function</button>
+                    <button class="tool-btn" onclick="sendQuery('Review all medications')">Medication Review</button>
+                </div>
+
+                <div class="tool-group">
+                    <h4>⚡ EASL Operations</h4>
+                    <button class="tool-btn" onclick="sendQuery('Send to EASL for diagnosis')">Send to EASL</button>
+                    <button class="tool-btn" onclick="sendQuery('Get EASL recommendations')">EASL Recommendations</button>
+                </div>
+
+                <div class="tool-group">
+                    <h4>✅ Task Management</h4>
+                    <button class="tool-btn" onclick="sendQuery('Create task for lab follow-up')">Lab Follow-up Task</button>
+                    <button class="tool-btn" onclick="sendQuery('Schedule patient check-in')">Schedule Check-in</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const serverUrl = window.location.origin;
+        let currentPatient = 'p0001';
+        let chatHistory = [];
+        let ws = null;
+        let isVoiceMode = false;
+        let isRecording = false;
+        let mediaRecorder = null;
+        let audioChunks = [];
+
+        // Initialize
+        document.addEventListener('DOMContentLoaded', () => {
+            updatePatient();
+            document.getElementById('patientSelect').addEventListener('change', updatePatient);
+            document.getElementById('userInput').addEventListener('keypress', (e) => {
+                if (e.key === 'Enter') sendMessage();
+            });
+
+            // Mode toggle
+            document.getElementById('chatModeBtn').addEventListener('click', () => setMode('chat'));
+            document.getElementById('voiceModeBtn').addEventListener('click', () => setMode('voice'));
+        });
+
+        function setMode(mode) {
+            isVoiceMode = (mode === 'voice');
+            document.getElementById('chatModeBtn').classList.toggle('active', mode === 'chat');
+            document.getElementById('voiceModeBtn').classList.toggle('active', mode === 'voice');
+            document.getElementById('voiceStatus').style.display = isVoiceMode ? 'block' : 'none';
+            
+            if (isVoiceMode) {
+                connectVoiceWebSocket();
+            } else {
+                disconnectWebSocket();
+            }
+        }
+
+        function updatePatient() {
+            currentPatient = document.getElementById('patientSelect').value;
+            document.getElementById('boardLink').href = `https://iso-clinic-v3.vercel.app/board/${currentPatient}`;
+            chatHistory = [];
+            document.getElementById('messages').innerHTML = '';
+            addMessage('assistant', `Switched to patient ${currentPatient}. How can I help?`);
+
+            // Update patient on server
+            fetch(`${serverUrl}/patient/switch`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ patient_id: currentPatient })
+            }).catch(e => console.error('Failed to switch patient:', e));
+
+            // Reconnect WebSocket if in voice mode
+            if (isVoiceMode) {
+                disconnectWebSocket();
+                connectVoiceWebSocket();
+            }
+        }
+
+        async function sendMessage() {
+            const input = document.getElementById('userInput');
+            const message = input.value.trim();
+            if (!message) return;
+
+            input.value = '';
+            addMessage('user', message);
+            chatHistory.push({ role: 'user', content: message, patient_id: currentPatient });
+
+            try {
+                const response = await fetch(`${serverUrl}/send-chat`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(chatHistory)
+                });
+
+                const data = await response.json();
+                addMessage('assistant', data.response || 'No response received');
+                chatHistory.push({ role: 'assistant', content: data.response });
+            } catch (error) {
+                console.error('Error:', error);
+                addMessage('assistant', '❌ Error: ' + error.message);
+            }
+        }
+
+        function sendQuery(query) {
+            document.getElementById('userInput').value = query;
+            sendMessage();
+        }
+
+        async function generateDiagnosis() {
+            addMessage('assistant', '🔬 Generating DILI diagnosis...');
+            try {
+                const response = await fetch(`${serverUrl}/generate_diagnosis`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ patient_id: currentPatient })
+                });
+                const data = await response.json();
+                addMessage('assistant', '✅ DILI diagnosis generated successfully!');
+            } catch (error) {
+                addMessage('assistant', '❌ Error generating diagnosis: ' + error.message);
+            }
+        }
+
+        async function generateReport() {
+            addMessage('assistant', '📄 Generating patient report...');
+            try {
+                const response = await fetch(`${serverUrl}/generate_report`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ patient_id: currentPatient })
+                });
+                const data = await response.json();
+                addMessage('assistant', '✅ Patient report generated successfully!');
+            } catch (error) {
+                addMessage('assistant', '❌ Error generating report: ' + error.message);
+            }
+        }
+
+        async function generateLegal() {
+            addMessage('assistant', '⚖️ Generating legal report...');
+            try {
+                const response = await fetch(`${serverUrl}/generate_legal`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ patient_id: currentPatient })
+                });
+                const data = await response.json();
+                addMessage('assistant', '✅ Legal report generated successfully!');
+            } catch (error) {
+                addMessage('assistant', '❌ Error generating legal report: ' + error.message);
+            }
+        }
+
+        function addMessage(role, content) {
+            const messagesDiv = document.getElementById('messages');
+            const messageDiv = document.createElement('div');
+            messageDiv.className = `message ${role}`;
+            
+            const bubble = document.createElement('div');
+            bubble.className = 'message-bubble';
+            bubble.textContent = content;
+            
+            messageDiv.appendChild(bubble);
+            messagesDiv.appendChild(messageDiv);
+            messagesDiv.scrollTop = messagesDiv.scrollHeight;
+        }
+
+        // Voice WebSocket Functions
+        function connectVoiceWebSocket() {
+            const wsUrl = `${serverUrl.replace('http', 'ws')}/ws/voice/${currentPatient}`;
+            ws = new WebSocket(wsUrl);
+
+            ws.onopen = () => {
+                document.getElementById('wsStatus').textContent = 'Connected';
+                document.getElementById('wsStatus').className = 'status connected';
+                addMessage('assistant', '🎤 Voice mode activated. Click the voice button to start speaking.');
+            };
+
+            ws.onmessage = (event) => {
+                // Gemini Live returns binary audio data (PCM)
+                if (event.data instanceof Blob) {
+                    playAudioBlob(event.data);
+                }
+            };
+
+            ws.onerror = (error) => {
+                console.error('WebSocket error:', error);
+                document.getElementById('wsStatus').textContent = 'Error';
+                document.getElementById('wsStatus').className = 'status disconnected';
+            };
+
+            ws.onclose = () => {
+                document.getElementById('wsStatus').textContent = 'Disconnected';
+                document.getElementById('wsStatus').className = 'status disconnected';
+            };
+        }
+
+        function disconnectWebSocket() {
+            if (ws) {
+                ws.close();
+                ws = null;
+            }
+        }
+
+        async function toggleVoice() {
+            if (!isVoiceMode) {
+                alert('Please switch to Voice Mode first');
+                return;
+            }
+
+            if (!isRecording) {
+                await startRecording();
+            } else {
+                stopRecording();
+            }
+        }
+
+        let audioContext = null;
+        let sourceNode = null;
+        let streamProcessorNode = null;
+
+        async function startRecording() {
+            try {
+                // Initialize Web Audio API
+                audioContext = new (window.AudioContext || window.webkitAudioContext)({
+                    sampleRate: 16000
+                });
+
+                const stream = await navigator.mediaDevices.getUserMedia({ 
+                    audio: {
+                        channelCount: 1,
+                        sampleRate: 16000,
+                        echoCancellation: true,
+                        noiseSuppression: true,
+                        autoGainControl: true
+                    } 
+                });
+
+                sourceNode = audioContext.createMediaStreamSource(stream);
+                
+                // Create a ScriptProcessor to capture audio chunks in real-time
+                const bufferSize = 4096;
+                streamProcessorNode = audioContext.createScriptProcessor(bufferSize, 1, 1);
+                
+                streamProcessorNode.onaudioprocess = (e) => {
+                    if (ws && ws.readyState === WebSocket.OPEN) {
+                        const inputData = e.inputBuffer.getChannelData(0);
+                        // Convert Float32Array to Int16Array (PCM 16-bit)
+                        const pcmData = new Int16Array(inputData.length);
+                        for (let i = 0; i < inputData.length; i++) {
+                            const s = Math.max(-1, Math.min(1, inputData[i]));
+                            pcmData[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+                        }
+                        // Send raw PCM bytes to WebSocket
+                        ws.send(pcmData.buffer);
+                    }
+                };
+
+                sourceNode.connect(streamProcessorNode);
+                streamProcessorNode.connect(audioContext.destination);
+
+                isRecording = true;
+                document.getElementById('voiceBtn').classList.add('active');
+                document.getElementById('voiceBtn').textContent = '⏹️ Stop';
+                document.getElementById('voiceState').textContent = 'Listening...';
+            } catch (error) {
+                console.error('Error accessing microphone:', error);
+                alert('Could not access microphone. Please check permissions.');
+            }
+        }
+
+        function stopRecording() {
+            if (streamProcessorNode) {
+                streamProcessorNode.disconnect();
+                streamProcessorNode = null;
+            }
+            if (sourceNode) {
+                sourceNode.disconnect();
+                sourceNode.mediaStream.getTracks().forEach(track => track.stop());
+                sourceNode = null;
+            }
+            if (audioContext) {
+                audioContext.close();
+                audioContext = null;
+            }
+            
+            isRecording = false;
+            document.getElementById('voiceBtn').classList.remove('active');
+            document.getElementById('voiceBtn').textContent = '🎤 Voice';
+            document.getElementById('voiceState').textContent = 'Ready';
+        }
+
+        // Audio playback for Gemini Live PCM audio
+        const audioQueue = [];
+        let isPlaying = false;
+        
+        async function playAudioBlob(blob) {
+            audioQueue.push(blob);
+            if (!isPlaying) {
+                processAudioQueue();
+            }
+        }
+        
+        async function processAudioQueue() {
+            if (audioQueue.length === 0) {
+                isPlaying = false;
+                document.getElementById('voiceState').textContent = 'Ready';
+                return;
+            }
+            
+            isPlaying = true;
+            document.getElementById('voiceState').textContent = 'Speaking...';
+            
+            const blob = audioQueue.shift();
+            const arrayBuffer = await blob.arrayBuffer();
+            
+            // Play PCM audio from Gemini Live
+            const playContext = new (window.AudioContext || window.webkitAudioContext)({
+                sampleRate: 24000
+            });
+            
+            const audioBuffer = playContext.createBuffer(1, arrayBuffer.byteLength / 2, 24000);
+            const channelData = audioBuffer.getChannelData(0);
+            const pcmData = new Int16Array(arrayBuffer);
+            
+            for (let i = 0; i < pcmData.length; i++) {
+                channelData[i] = pcmData[i] / 0x8000;
+            }
+            
+            const source = playContext.createBufferSource();
+            source.buffer = audioBuffer;
+            source.connect(playContext.destination);
+            source.onended = () => {
+                playContext.close();
+                processAudioQueue();
+            };
+            source.start();
+        }
+    </script>
+</body>
+</html>

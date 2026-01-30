@@ -18,5 +18,15 @@ google-cloud-storage==2.14.0
 google-cloud-speech==2.24.0
 google-cloud-aiplatform==1.38.1
 
-# Google GenAI SDK
+# Google GenAI SDK (new SDK for voice/chat)
 google-genai==1.60.0
+
+# Google Generative AI SDK (old SDK for agent-2.9 modules)
+google-generativeai>=0.8.3
+
+# RAG and Vector Search
+faiss-cpu==1.8.0
+langchain-community==0.3.18
+langchain-core==0.3.34
+scikit-learn==1.6.1
+numpy==2.2.3

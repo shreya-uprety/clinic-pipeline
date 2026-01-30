@@ -2,6 +2,7 @@ import uvicorn
 import logging
 from fastapi import FastAPI, HTTPException, BackgroundTasks, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 from typing import Optional, List
 import json
@@ -39,13 +40,17 @@ except Exception as e:
     logger.error(f"❌ Failed to import bucket_ops: {e}")
     bucket_ops = None
 
-# Import new agent modules with error handling
+# Import agent-2.9 modules
 try:
-    from chat_agent import ChatAgent
-    logger.info("✅ ChatAgent imported successfully")
+    import chat_model
+    import side_agent
+    from patient_manager import patient_manager
+    logger.info("✅ Agent-2.9 modules imported successfully")
 except Exception as e:
-    logger.error(f"❌ Failed to import ChatAgent: {e}")
-    ChatAgent = None
+    logger.error(f"❌ Failed to import Agent-2.9 modules: {e}")
+    chat_model = None
+    side_agent = None
+    patient_manager = None
 
 try:
     from websocket_agent import websocket_pre_consult_endpoint, websocket_chat_endpoint, get_websocket_agent
@@ -369,36 +374,82 @@ class GeneralChatResponse(BaseModel):
     status: str
 
 
-@app.post("/api/chat", response_model=GeneralChatResponse)
-async def general_chat(request: GeneralChatRequest):
+@app.post("/send-chat")
+async def run_chat_agent(payload: list[dict]):
     """
-    General-purpose chat endpoint with RAG and tool execution.
-    Use this for medical Q&A, data retrieval, and analysis.
-    
-    Supports:
-    - RAG (Retrieval-Augmented Generation) from patient data
-    - Tool execution (get labs, medications, encounters, etc.)
-    - Conversation history management
+    Chat endpoint using agent-2.9 architecture.
+    Accepts chat history and returns agent response.
     """
     try:
-        # Create or retrieve chat agent for this patient
-        agent = ChatAgent(patient_id=request.patient_id, use_tools=request.use_tools)
+        if patient_manager:
+            # Extract patient_id if provided in first message metadata
+            if len(payload) > 0 and isinstance(payload[0], dict):
+                patient_id = payload[0].get('patient_id', patient_manager.get_patient_id())
+                patient_manager.set_patient_id(patient_id)
         
-        # Get response
-        response_text = await agent.chat(request.message)
-        
-        # Save conversation history
-        agent.save_history()
-        
-        return GeneralChatResponse(
-            patient_id=request.patient_id,
-            response=response_text,
-            status="success"
-        )
+        answer = await chat_model.chat_agent(payload)
+        logger.info(f"Agent Answer: {answer[:200]}...")
+        return {"response": answer, "status": "success"}
         
     except Exception as e:
-        logger.error(f"General chat error: {e}")
+        logger.error(f"Chat agent error: {e}")
+        logger.error(traceback.format_exc())
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/generate_diagnosis")
+async def gen_diagnosis(payload: dict):
+    """Generate DILI diagnosis using agent-2.9"""
+    try:
+        if patient_manager and payload.get('patient_id'):
+            patient_manager.set_patient_id(payload['patient_id'])
+        
+        await side_agent.create_dili_diagnosis()
+        return {"status": "done"}
+    except Exception as e:
+        logger.error(f"Error generating diagnosis: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/generate_report")
+async def gen_report(payload: dict):
+    """Generate patient report using agent-2.9"""
+    try:
+        if patient_manager and payload.get('patient_id'):
+            patient_manager.set_patient_id(payload['patient_id'])
+        
+        await side_agent.create_patient_report()
+        return {"status": "done"}
+    except Exception as e:
+        logger.error(f"Error generating report: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/generate_legal")
+async def gen_legal(payload: dict):
+    """Generate legal report using agent-2.9"""
+    try:
+        if patient_manager and payload.get('patient_id'):
+            patient_manager.set_patient_id(payload['patient_id'])
+        
+        await side_agent.create_legal_doc()
+        return {"status": "done"}
+    except Exception as e:
+        logger.error(f"Error generating legal report: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/patient/current")
+async def get_current_patient():
+    """Get current patient ID"""
+    if patient_manager:
+        return {"patient_id": patient_manager.get_patient_id()}
+    return {"patient_id": "p0001"}
+
+@app.post("/patient/switch")
+async def switch_patient(payload: dict):
+    """Switch current patient"""
+    if patient_manager and payload.get('patient_id'):
+        patient_manager.set_patient_id(payload['patient_id'])
+        return {"status": "success", "patient_id": patient_manager.get_patient_id()}
+    raise HTTPException(status_code=400, detail="Missing patient_id")
 
 
 @app.get("/api/chat/{patient_id}/history")
@@ -817,6 +868,22 @@ async def get_available_slots(doctor_type: Optional[str] = "General"):
     slots = schedule_ops.get_empty_schedule()
 
     return {"available_slots": slots}
+
+
+# Agent-2.9 UI endpoint
+@app.get("/ui/{file_path:path}")
+async def serve_ui(file_path: str):
+    """Serve UI files"""
+    try:
+        ui_file = os.path.join("ui", file_path)
+        if os.path.exists(ui_file):
+            with open(ui_file, "r", encoding="utf-8") as f:
+                content = f.read()
+            return HTMLResponse(content=content)
+        raise HTTPException(status_code=404, detail="File not found")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 # --- Run Block ---
 if __name__ == "__main__":

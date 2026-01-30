@@ -22,6 +22,7 @@ from google import genai
 from google.genai import types
 import bucket_ops
 import httpx
+from canvas_tools import CanvasTools
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -305,6 +306,7 @@ class ToolExecutor:
         """
         self.gcs = gcs_manager
         self.context_data_ref = context_data_ref
+        self.canvas_tools = CanvasTools()  # Initialize canvas manipulation tools
         self.tools = self._register_tools()
         
     def _register_tools(self) -> Dict[str, Callable]:
@@ -320,6 +322,15 @@ class ToolExecutor:
             "get_patient_encounters": self.get_patient_encounters,
             "search_patient_data": self.search_patient_data,
             "calculate_drug_interaction": self.calculate_drug_interaction,
+            # Canvas manipulation tools
+            "focus_board_item": self.focus_board_item,
+            "create_todo": self.create_todo,
+            "send_easl_query": self.send_easl_query,
+            "create_schedule": self.create_schedule,
+            "send_notification": self.send_notification,
+            "create_diagnosis_report": self.create_diagnosis_report,
+            "create_patient_report": self.create_patient_report,
+            "create_legal_report": self.create_legal_report,
         }
     
     def get_tool_declarations(self) -> List[types.Tool]:
@@ -420,6 +431,166 @@ class ToolExecutor:
                                 }
                             },
                             "required": ["drug_a", "drug_b"]
+                        }
+                    ),
+                    # Canvas manipulation tools
+                    types.FunctionDeclaration(
+                        name="focus_board_item",
+                        description="Navigate to and focus on a specific item on the clinical board (e.g., medication timeline, lab chart, patient profile). This will zoom to and highlight the requested board element.",
+                        parameters={
+                            "type": "object",
+                            "properties": {
+                                "patient_id": {
+                                    "type": "string",
+                                    "description": "The patient ID"
+                                },
+                                "object_description": {
+                                    "type": "string",
+                                    "description": "Description of the board item to focus on (e.g., 'medication timeline', 'lab results chart', 'patient profile')"
+                                }
+                            },
+                            "required": ["patient_id", "object_description"]
+                        }
+                    ),
+                    types.FunctionDeclaration(
+                        name="create_todo",
+                        description="Create a TODO/task list on the clinical board with specific action items for the care team.",
+                        parameters={
+                            "type": "object",
+                            "properties": {
+                                "patient_id": {
+                                    "type": "string",
+                                    "description": "The patient ID"
+                                },
+                                "title": {
+                                    "type": "string",
+                                    "description": "Title of the TODO list"
+                                },
+                                "description": {
+                                    "type": "string",
+                                    "description": "Brief description of the task"
+                                },
+                                "tasks": {
+                                    "type": "array",
+                                    "description": "Array of task descriptions (strings)",
+                                    "items": {
+                                        "type": "string"
+                                    }
+                                }
+                            },
+                            "required": ["patient_id", "title", "tasks"]
+                        }
+                    ),
+                    types.FunctionDeclaration(
+                        name="send_easl_query",
+                        description="Send a clinical question to the EASL (European Association for the Study of the Liver) guideline system for expert liver disease recommendations. The answer will appear in an iframe on the board.",
+                        parameters={
+                            "type": "object",
+                            "properties": {
+                                "patient_id": {
+                                    "type": "string",
+                                    "description": "The patient ID"
+                                },
+                                "question": {
+                                    "type": "string",
+                                    "description": "Clinical question for EASL guidelines (e.g., 'What is the RUCAM score for this DILI case?')"
+                                }
+                            },
+                            "required": ["patient_id", "question"]
+                        }
+                    ),
+                    types.FunctionDeclaration(
+                        name="create_schedule",
+                        description="Create a scheduling panel on the board for coordinating follow-up appointments, investigations, and care coordination.",
+                        parameters={
+                            "type": "object",
+                            "properties": {
+                                "patient_id": {
+                                    "type": "string",
+                                    "description": "The patient ID"
+                                },
+                                "title": {
+                                    "type": "string",
+                                    "description": "Schedule title"
+                                },
+                                "details": {
+                                    "type": "string",
+                                    "description": "Appointment or investigation details"
+                                }
+                            },
+                            "required": ["patient_id", "title", "details"]
+                        }
+                    ),
+                    types.FunctionDeclaration(
+                        name="send_notification",
+                        description="Send a notification message to the care team or other healthcare providers.",
+                        parameters={
+                            "type": "object",
+                            "properties": {
+                                "patient_id": {
+                                    "type": "string",
+                                    "description": "The patient ID"
+                                },
+                                "message": {
+                                    "type": "string",
+                                    "description": "Notification message content"
+                                }
+                            },
+                            "required": ["patient_id", "message"]
+                        }
+                    ),
+                    types.FunctionDeclaration(
+                        name="create_diagnosis_report",
+                        description="Create a DILI (Drug-Induced Liver Injury) diagnostic report on the board with detailed assessment.",
+                        parameters={
+                            "type": "object",
+                            "properties": {
+                                "patient_id": {
+                                    "type": "string",
+                                    "description": "The patient ID"
+                                },
+                                "summary": {
+                                    "type": "string",
+                                    "description": "Brief diagnostic summary"
+                                }
+                            },
+                            "required": ["patient_id", "summary"]
+                        }
+                    ),
+                    types.FunctionDeclaration(
+                        name="create_patient_report",
+                        description="Create a comprehensive patient summary report on the board.",
+                        parameters={
+                            "type": "object",
+                            "properties": {
+                                "patient_id": {
+                                    "type": "string",
+                                    "description": "The patient ID"
+                                },
+                                "summary": {
+                                    "type": "string",
+                                    "description": "Patient summary"
+                                }
+                            },
+                            "required": ["patient_id", "summary"]
+                        }
+                    ),
+                    types.FunctionDeclaration(
+                        name="create_legal_report",
+                        description="Create a legal compliance report on the board covering consent, duty of candour, and guideline adherence.",
+                        parameters={
+                            "type": "object",
+                            "properties": {
+                                "patient_id": {
+                                    "type": "string",
+                                    "description": "The patient ID"
+                                },
+                                "summary": {
+                                    "type": "string",
+                                    "description": "Legal compliance summary"
+                                }
+                            },
+                            "required": ["patient_id", "summary"]
                         }
                     ),
                 ]
@@ -638,6 +809,66 @@ class ToolExecutor:
             "recommendation": "Please consult a pharmacist or drug interaction database."
         }
     
+    # Canvas manipulation tool wrappers
+    def focus_board_item(self, patient_id: str, object_description: str) -> Dict[str, Any]:
+        """Focus on a specific board item."""
+        return asyncio.run(self.canvas_tools.focus_board_item(patient_id, object_description))
+    
+    def create_todo(self, patient_id: str, title: str, tasks: List[str], description: str = "") -> Dict[str, Any]:
+        """Create TODO list on board."""
+        # Convert simple task strings to task objects
+        task_objects = []
+        for idx, task in enumerate(tasks, 1):
+            task_objects.append({
+                "id": f"task-{idx}",
+                "text": task,
+                "status": "pending",
+                "agent": "Care Team",
+                "subTodos": []
+            })
+        return asyncio.run(self.canvas_tools.create_todo_on_board(patient_id, title, description or title, task_objects))
+    
+    def send_easl_query(self, patient_id: str, question: str) -> Dict[str, Any]:
+        """Send query to EASL guideline system."""
+        return asyncio.run(self.canvas_tools.send_to_easl(patient_id, question))
+    
+    def create_schedule(self, patient_id: str, title: str, details: str) -> Dict[str, Any]:
+        """Create scheduling panel on board."""
+        schedule_data = {
+            "title": title,
+            "currentStatus": "Pending",
+            "details": details
+        }
+        return asyncio.run(self.canvas_tools.create_schedule(patient_id, schedule_data))
+    
+    def send_notification(self, patient_id: str, message: str) -> Dict[str, Any]:
+        """Send notification to care team."""
+        return asyncio.run(self.canvas_tools.send_notification(patient_id, message))
+    
+    def create_diagnosis_report(self, patient_id: str, summary: str) -> Dict[str, Any]:
+        """Create diagnosis report on board."""
+        diagnosis_data = {
+            "summary": summary,
+            "timestamp": datetime.now().isoformat()
+        }
+        return asyncio.run(self.canvas_tools.create_diagnosis_report(patient_id, diagnosis_data))
+    
+    def create_patient_report(self, patient_id: str, summary: str) -> Dict[str, Any]:
+        """Create patient summary report on board."""
+        report_data = {
+            "summary": summary,
+            "timestamp": datetime.now().isoformat()
+        }
+        return asyncio.run(self.canvas_tools.create_patient_report(patient_id, report_data))
+    
+    def create_legal_report(self, patient_id: str, summary: str) -> Dict[str, Any]:
+        """Create legal compliance report on board."""
+        legal_data = {
+            "summary": summary,
+            "timestamp": datetime.now().isoformat()
+        }
+        return asyncio.run(self.canvas_tools.create_legal_report(patient_id, legal_data))
+    
     @staticmethod
     def _extract_snippet(text: str, query: str, context_chars: int = 200) -> str:
         """Extract text snippet around query match."""
@@ -684,6 +915,9 @@ class ChatAgent:
         self.patient_id = patient_id
         self.conversation_history: List[Dict[str, str]] = []
         self.context_data: Optional[Dict] = None
+        self._context_loading = False
+        self._context_loaded = False
+        self._context_lock = asyncio.Lock()
         
         # Initialize tool executor with reference to context data
         self.tool_executor = ToolExecutor(self.gcs, self.context_data) if use_tools else None
@@ -694,29 +928,42 @@ class ChatAgent:
     
     async def _load_patient_context(self):
         """Load patient context data for RAG."""
-        try:
-            logger.info(f"Loading context for patient {self.patient_id}...")
-            self.context_data = await self.retriever.retrieve_patient_context(self.patient_id)
+        async with self._context_lock:
+            # Skip if already loaded or currently loading
+            if self._context_loaded or self._context_loading:
+                return
             
-            # Update tool executor's context reference
-            if self.tool_executor:
-                self.tool_executor.context_data_ref = self.context_data
+            self._context_loading = True
             
-            # Log what was retrieved
-            if self.context_data and self.context_data.get("data"):
-                data_keys = list(self.context_data["data"].keys())
-                logger.info(f"✅ Loaded context for patient {self.patient_id}: {data_keys}")
-            else:
-                logger.warning(f"⚠️ No context data found for patient {self.patient_id}")
-        except Exception as e:
-            logger.error(f"❌ Failed to load patient context: {e}")
-            import traceback
-            traceback.print_exc()
-            self.context_data = None
+            try:
+                logger.info(f"Loading context for patient {self.patient_id}...")
+                self.context_data = await self.retriever.retrieve_patient_context(self.patient_id)
+                
+                # Update tool executor's context reference
+                if self.tool_executor:
+                    self.tool_executor.context_data_ref = self.context_data
+                
+                # Log what was retrieved
+                if self.context_data and self.context_data.get("data"):
+                    data_keys = list(self.context_data["data"].keys())
+                    logger.info(f"✅ Loaded context for patient {self.patient_id}: {data_keys}")
+                else:
+                    logger.warning(f"⚠️ No context data found for patient {self.patient_id}")
+                
+                self._context_loaded = True
+            except Exception as e:
+                logger.error(f"❌ Failed to load patient context: {e}")
+                import traceback
+                traceback.print_exc()
+                self.context_data = None
+            finally:
+                self._context_loading = False
     
     async def reload_context(self):
         """Reload patient context data (useful if data has been updated)."""
         if self.patient_id:
+            self._context_loaded = False
+            self._context_loading = False
             await self._load_patient_context()
     
     def _build_context_prompt(self) -> str:
@@ -914,9 +1161,8 @@ Guidelines:
 
 When patient context is provided, use it to give personalized answers."""
 
-        # Ensure context is loaded
-        if self.patient_id and not self.context_data:
-            logger.info("Context not loaded yet, loading now...")
+        # Ensure context is loaded (wait if loading in progress)
+        if self.patient_id and not self._context_loaded:
             await self._load_patient_context()
 
         # Build full prompt with context
@@ -1033,9 +1279,8 @@ Board URL: https://iso-clinic-v3.vercel.app/board/{self.patient_id}
                 logger.warning(f"Failed to load system prompt for streaming: {e}")
                 system_instruction = "You are a helpful medical AI assistant."
         
-        # Ensure context is loaded
-        if self.patient_id and not self.context_data:
-            logger.info("Context not loaded yet, loading now...")
+        # Ensure context is loaded (wait if loading in progress)
+        if self.patient_id and not self._context_loaded:
             await self._load_patient_context()
         
         context_prompt = self._build_context_prompt()
