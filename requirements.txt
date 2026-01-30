@@ -1,32 +1,32 @@
-fastapi==0.101.0
-uvicorn[standard]==0.23.2
+fastapi
+uvicorn[standard]
 
 # WebSockets (compatible with google-genai)
-websockets>=13.0.0,<15.1.0
+websockets
 
-python-dotenv==1.2.1
-requests==2.32.5
-httpx>=0.27.0
-grpcio==1.76.0
-mutagen==1.47.0
-pillow==12.1.0
-pandas==3.0.0
+python-dotenv
+requests
+httpx
+grpcio
+mutagen
+pillow
+pandas
 
 # Google Cloud dependencies
-google-auth>=2.23.3
-google-cloud-storage==2.14.0
-google-cloud-speech==2.24.0
-google-cloud-aiplatform==1.38.1
+google-auth
+google-cloud-storage
+google-cloud-speech
+google-cloud-aiplatform
 
 # Google GenAI SDK (new SDK for voice/chat)
-google-genai==1.60.0
+google-genai
 
 # Google Generative AI SDK (old SDK for agent-2.9 modules)
-google-generativeai>=0.8.3
+google-generativeai
 
 # RAG and Vector Search
-faiss-cpu==1.8.0
-langchain-community==0.3.18
-langchain-core>=0.3.37
-scikit-learn==1.6.1
-numpy==2.2.3
+faiss-cpu
+langchain-community
+langchain-core
+scikit-learn
+numpy
