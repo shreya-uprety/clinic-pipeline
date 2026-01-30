@@ -1171,9 +1171,9 @@ When patient context is provided, use it to give personalized answers."""
         
         # Debug logging
         if context_prompt:
-            logger.info(f"Including patient context in prompt ({len(context_prompt)} chars)")
+            logger.info(f"✅ Including patient context in prompt ({len(context_prompt)} chars)")
         else:
-            logger.warning(f"No patient context available for patient {self.patient_id}")
+            logger.error(f"❌ NO PATIENT CONTEXT for patient {self.patient_id} - context_data: {self.context_data is not None}, _context_loaded: {self._context_loaded}")
         
         # Add to conversation history
         self.conversation_history.append({

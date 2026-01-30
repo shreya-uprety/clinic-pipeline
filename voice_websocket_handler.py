@@ -59,10 +59,12 @@ Board URL: https://iso-clinic-v3.vercel.app/board/{self.patient_id}
 CRITICAL INSTRUCTIONS FOR VOICE MODE:
 - Keep responses VERY SHORT - 1-2 sentences maximum
 - Be conversational and natural for voice interaction
-- You are currently helping with patient ID: {self.patient_id}
-- This patient ID never changes during this conversation
-- Use tools to get patient data, navigate canvas, create tasks, etc.
-- When using tools, ALWAYS use patient_id: {self.patient_id}
+- MANDATORY: For ANY question about patient data, you MUST call get_patient_data tool FIRST
+- Questions requiring get_patient_data: name, age, gender, medications, labs, diagnosis, history, allergies, problems, encounters
+- NEVER respond "I don't have access to patient data" - ALWAYS use get_patient_data tool
+- After receiving tool data, answer concisely using that information
+- Patient ID is always: {self.patient_id}
+- Other tools: focus_board_item (navigate UI), create_task (add TODO), send_to_easl (clinical analysis)
 """
             
             logger.info(f"✅ Voice system instruction ready (context loaded separately)")
@@ -80,6 +82,46 @@ Board URL: https://iso-clinic-v3.vercel.app/board/{self.patient_id}
 Assist the clinician with patient care. Use tools to access data and perform actions.
 """
     
+    def _create_brief_summary(self) -> str:
+        """Create a brief summary of patient data for system instruction (max 500 chars)."""
+        if not self.context_data or not isinstance(self.context_data, list):
+            return "No patient data available."
+        
+        try:
+            summary_parts = []
+            
+            # Find Sidebar with patient info
+            for item in self.context_data:
+                if item.get("componentType") == "Sidebar" and "patientData" in item:
+                    patient_data = item["patientData"]
+                    
+                    # Get demographics
+                    if "patient" in patient_data:
+                        p = patient_data["patient"]
+                        name = p.get("name", "Unknown")
+                        age = p.get("age", "?")
+                        sex = p.get("sex", "?")
+                        summary_parts.append(f"Patient: {name}, {age}yo {sex}")
+                    
+                    # Get primary diagnosis
+                    if "description" in patient_data:
+                        desc = patient_data["description"][:150]
+                        summary_parts.append(f"Summary: {desc}")
+                    
+                    # Get problem list (first 3)
+                    if "problem_list" in patient_data:
+                        problems = patient_data["problem_list"][:3]
+                        if problems:
+                            problem_names = [p.get("name", "") for p in problems]
+                            summary_parts.append(f"Key Problems: {', '.join(problem_names)}")
+                    
+                    break
+            
+            return "\n".join(summary_parts) if summary_parts else "Patient data loaded."
+        except Exception as e:
+            logger.error(f"Error creating summary: {e}")
+            return "Patient data available via tools."
+    
     def get_system_instruction(self):
         """Get system instruction for this patient (sync wrapper) - SHORT version"""
         try:
@@ -87,21 +129,25 @@ Assist the clinician with patient care. Use tools to access data and perform act
             with open("system_prompts/chat_model_system.md", "r", encoding="utf-8") as f:
                 base_prompt = f.read()
             
-            # Add patient-specific context - KEEP SHORT
+            # Add patient-specific context - KEEP SHORT but include summary
+            context_section = ""
+            if self.patient_summary:
+                context_section = f"\n\n--- CURRENT PATIENT CONTEXT ---\n{self.patient_summary}\n"
+            
             return f"""{base_prompt}
 
---- PATIENT-SPECIFIC CONTEXT ---
+--- PATIENT-SPECIFIC INFO ---
 Current Patient ID: {self.patient_id}
-Board URL: https://iso-clinic-v3.vercel.app/board/{self.patient_id}
+Board URL: https://iso-clinic-v3.vercel.app/board/{self.patient_id}{context_section}
 
 CRITICAL INSTRUCTIONS FOR VOICE MODE:
 - Keep responses VERY SHORT - 1-2 sentences maximum
 - Be conversational and natural for voice interaction
-- You are currently helping with patient ID: {self.patient_id}
-- IMPORTANT: When asked about patient information (medications, labs, demographics, history, etc.), ALWAYS call get_patient_data tool FIRST to retrieve the data
-- After getting patient data, answer the question using that data
-- Use tools to navigate canvas, create tasks, etc.
-- When using tools, ALWAYS use patient_id: {self.patient_id}
+- You have access to the patient's data shown above - use it to answer questions directly
+- For detailed or updated information, call get_patient_data tool
+- Use focus_board_item to navigate the board
+- Use create_task to add TODOs
+- Always use patient_id: {self.patient_id} when calling tools
 """
         except Exception as e:
             logger.error(f"Failed to load system prompt: {e}")
@@ -118,7 +164,19 @@ Use tools to access data and perform actions.
         tool_declarations = [
             {
                 "name": "get_patient_data",
-                "description": "Get ALL current patient's data including: demographics, medications, lab results, encounters, risk events, medical history, and clinical context. ALWAYS call this tool FIRST when user asks ANY question about the patient (e.g., 'what medications', 'lab results', 'patient name', 'medical history', etc.)",
+                "description": """MANDATORY: Call this tool to get patient information. Returns a JSON object with:
+- name, age, gender, date_of_birth, mrn (patient demographics)
+- current_medications: Array of medication strings with name, dose, indication, start/end dates
+- recent_labs: Array of lab results with biomarker name, value, unit, reference range, date, abnormal flag
+- risk_events: Array of risk assessments with date, riskScore (0-10), contributing factors
+- key_events: Array of clinical events with date, event name, clinical note
+- adverse_events: Array of adverse events with event, date, severity, causality
+- problem_list: Array of diagnoses and conditions
+- allergies: Patient allergies
+- clinical_notes: Recent clinical encounter notes
+- medical_history: Patient medical history summary
+
+Use this for ANY question about: patient name, age, medications, labs, test results, diagnoses, history, problems, allergies, risk, events.""",
                 "parameters": {
                     "type": "object",
                     "properties": {},
@@ -424,58 +482,197 @@ Use tools to access data and perform actions.
                                             summary["recent_encounters"].append(enc_data)
                                     logger.info(f"✅ Found {len(item['encounters'])} encounters in item {idx}")
                                 
-                                # Medications - check for medications array
-                                if "medications" in item and isinstance(item["medications"], list):
+                                # ==========================================
+                                # MEDICATIONS - MedicationTrack has data.medications
+                                # ==========================================
+                                if comp_type == "MedicationTrack" and "data" in item:
+                                    med_data = item["data"]
+                                    meds_list = []
+                                    # data can be dict with medications key or direct array
+                                    if isinstance(med_data, dict) and "medications" in med_data:
+                                        meds_list = med_data["medications"]
+                                    elif isinstance(med_data, list):
+                                        meds_list = med_data
+                                    
+                                    if meds_list:
+                                        meds = []
+                                        for med in meds_list[:15]:
+                                            if isinstance(med, dict):
+                                                name = med.get('name', 'Unknown')
+                                                dose = med.get('dose', '')
+                                                freq = med.get('frequency', '')
+                                                start = med.get('startDate', '')
+                                                end = med.get('endDate', 'ongoing')
+                                                indication = med.get('indication', '')
+                                                med_str = f"{name} {dose}"
+                                                if freq:
+                                                    med_str += f" {freq}"
+                                                if indication:
+                                                    med_str += f" (for {indication})"
+                                                if start:
+                                                    med_str += f" [started {start}"
+                                                    if end and end != 'ongoing':
+                                                        med_str += f", ended {end}]"
+                                                    else:
+                                                        med_str += ", ongoing]"
+                                                meds.append(med_str)
+                                        if meds:
+                                            logger.info(f"✅ Found {len(meds)} medications in MedicationTrack (item {idx})")
+                                            logger.info(f"   Sample meds: {meds[:3]}")
+                                            summary["current_medications"] = meds
+                                
+                                # Also check for direct medications array (legacy format)
+                                elif "medications" in item and isinstance(item["medications"], list):
                                     meds = []
-                                    for med in item["medications"][:10]:
+                                    for med in item["medications"][:15]:
                                         if isinstance(med, dict):
                                             med_str = f"{med.get('name')} {med.get('dose')} {med.get('frequency')}"
-                                            # Add indication if available
                                             if med.get("indication"):
                                                 med_str += f" (for {med.get('indication')})"
                                             meds.append(med_str)
                                     if meds:
-                                        logger.info(f"✅ Found {len(meds)} medications in item {idx}")
+                                        logger.info(f"✅ Found {len(meds)} medications (direct) in item {idx}")
                                         summary["current_medications"] = meds
                                 
-                                # Labs - check for labs array
-                                if "labs" in item and isinstance(item["labs"], list):
+                                # ==========================================
+                                # LABS - LabTrack has data array of biomarkers
+                                # ==========================================
+                                if comp_type == "LabTrack" and "data" in item:
+                                    lab_data = item["data"]
+                                    if isinstance(lab_data, list):
+                                        labs = []
+                                        for biomarker in lab_data[:20]:
+                                            if isinstance(biomarker, dict):
+                                                name = biomarker.get('biomarker', 'Unknown')
+                                                unit = biomarker.get('unit', '')
+                                                ref_range = biomarker.get('referenceRange', {})
+                                                ref_min = ref_range.get('min')
+                                                ref_max = ref_range.get('max')
+                                                values = biomarker.get('values', [])
+                                                
+                                                # Get most recent value
+                                                if values and isinstance(values, list):
+                                                    latest = values[-1] if values else {}
+                                                    value = latest.get('value')
+                                                    date = latest.get('t', '')[:10] if latest.get('t') else ''
+                                                    
+                                                    # Check if abnormal
+                                                    abnormal = False
+                                                    if value is not None:
+                                                        if ref_min is not None and value < ref_min:
+                                                            abnormal = True
+                                                        if ref_max is not None and value > ref_max:
+                                                            abnormal = True
+                                                    
+                                                    lab_str = f"{name}: {value} {unit}"
+                                                    if ref_min is not None or ref_max is not None:
+                                                        lab_str += f" (ref: {ref_min}-{ref_max})"
+                                                    if date:
+                                                        lab_str += f" [{date}]"
+                                                    if abnormal:
+                                                        lab_str += " [ABNORMAL]"
+                                                    labs.append(lab_str)
+                                        
+                                        if labs:
+                                            logger.info(f"✅ Found {len(labs)} lab values in LabTrack (item {idx})")
+                                            logger.info(f"   Sample labs: {labs[:3]}")
+                                            summary["recent_labs"] = labs
+                                
+                                # Also check for direct labs array (legacy format)
+                                elif "labs" in item and isinstance(item["labs"], list):
                                     labs = []
                                     for lab in item["labs"][:15]:
                                         if isinstance(lab, dict):
                                             lab_str = f"{lab.get('name')}: {lab.get('value')} {lab.get('unit')}"
                                             if lab.get("date"):
                                                 lab_str += f" ({lab.get('date')})"
-                                            # Add flag if abnormal
                                             if lab.get("flag") or lab.get("abnormal"):
                                                 lab_str += " [ABNORMAL]"
                                             labs.append(lab_str)
                                     if labs:
-                                        logger.info(f"✅ Found {len(labs)} labs in item {idx}")
+                                        logger.info(f"✅ Found {len(labs)} labs (direct) in item {idx}")
                                         summary["recent_labs"] = labs
                                 
-                                # Risk events
-                                if "risks" in item and isinstance(item["risks"], list):
+                                # ==========================================
+                                # RISK EVENTS - RiskTrack has risks directly
+                                # ==========================================
+                                if comp_type == "RiskTrack" and "risks" in item and isinstance(item["risks"], list):
+                                    risks = []
+                                    for risk in item["risks"][:10]:
+                                        if isinstance(risk, dict):
+                                            risk_entry = {
+                                                "date": risk.get("t", "")[:10] if risk.get("t") else risk.get("date"),
+                                                "riskScore": risk.get("riskScore"),
+                                                "factors": risk.get("factors", [])
+                                            }
+                                            risks.append(risk_entry)
+                                    if risks:
+                                        logger.info(f"✅ Found {len(risks)} risk scores in RiskTrack (item {idx})")
+                                        logger.info(f"   Sample risk: {risks[0]}")
+                                        summary["risk_events"] = risks
+                                
+                                # Also check for direct risks array (legacy format)
+                                elif "risks" in item and isinstance(item["risks"], list) and comp_type != "RiskTrack":
                                     if "risk_events" not in summary:
                                         summary["risk_events"] = []
                                     for risk in item["risks"][:10]:
                                         if isinstance(risk, dict):
                                             summary["risk_events"].append({
-                                                "date": risk.get("date"),
+                                                "date": risk.get("date") or risk.get("t", "")[:10] if risk.get("t") else "",
                                                 "event": risk.get("event") or risk.get("description"),
                                                 "severity": risk.get("severity") or risk.get("level")
                                             })
                                 
-                                # Key events
-                                if "events" in item and isinstance(item["events"], list):
+                                # ==========================================
+                                # KEY EVENTS - KeyEventsTrack has events directly
+                                # ==========================================
+                                if comp_type == "KeyEventsTrack" and "events" in item and isinstance(item["events"], list):
+                                    events = []
+                                    for event in item["events"][:15]:
+                                        if isinstance(event, dict):
+                                            event_entry = {
+                                                "date": event.get("t", "")[:10] if event.get("t") else event.get("date"),
+                                                "event": event.get("event"),
+                                                "note": event.get("note")
+                                            }
+                                            events.append(event_entry)
+                                    if events:
+                                        logger.info(f"✅ Found {len(events)} key events in KeyEventsTrack (item {idx})")
+                                        logger.info(f"   Sample event: {events[0]}")
+                                        summary["key_events"] = events
+                                
+                                # Also check for direct events array (legacy format)
+                                elif "events" in item and isinstance(item["events"], list) and comp_type != "KeyEventsTrack":
                                     if "key_events" not in summary:
                                         summary["key_events"] = []
                                     for event in item["events"][:10]:
                                         if isinstance(event, dict):
                                             summary["key_events"].append({
-                                                "date": event.get("date"),
+                                                "date": event.get("date") or event.get("t", "")[:10] if event.get("t") else "",
                                                 "event": event.get("event") or event.get("description")
                                             })
+                                
+                                # ==========================================
+                                # ADVERSE EVENTS - AdverseEventAnalytics
+                                # ==========================================
+                                if comp_type == "AdverseEventAnalytics":
+                                    if "adverseEvents" in item and isinstance(item["adverseEvents"], list):
+                                        adverse = []
+                                        for ae in item["adverseEvents"][:10]:
+                                            if isinstance(ae, dict):
+                                                adverse.append({
+                                                    "event": ae.get("event") or ae.get("name"),
+                                                    "date": ae.get("date") or ae.get("t", "")[:10] if ae.get("t") else "",
+                                                    "severity": ae.get("severity") or ae.get("grade"),
+                                                    "causality": ae.get("causality")
+                                                })
+                                        if adverse:
+                                            logger.info(f"✅ Found {len(adverse)} adverse events in AdverseEventAnalytics (item {idx})")
+                                            summary["adverse_events"] = adverse
+                                    
+                                    if "rucam_ctcae_analysis" in item:
+                                        summary["rucam_analysis"] = item["rucam_ctcae_analysis"]
+                                        logger.info(f"✅ Found RUCAM/CTCAE analysis in item {idx}")
                                 
                                 # Differential diagnosis
                                 if "differential" in item and isinstance(item["differential"], list):
@@ -486,7 +683,18 @@ Use tools to access data and perform actions.
                                     summary["primary_diagnosis"] = item["primaryDiagnosis"]
                         
                         logger.info(f"📤 Returning summary with keys: {list(summary.keys())}")
-                        logger.info(f"📤 Summary values: name={summary.get('name')}, age={summary.get('age')}, meds={len(summary.get('current_medications', []))}, labs={len(summary.get('recent_labs', []))}")
+                        logger.info(f"📤 Summary counts: name={summary.get('name')}, age={summary.get('age')}, meds={len(summary.get('current_medications', []))}, labs={len(summary.get('recent_labs', []))}, risks={len(summary.get('risk_events', []))}, events={len(summary.get('key_events', []))}")
+                        
+                        # Log actual content samples for debugging
+                        if summary.get('recent_labs'):
+                            logger.info(f"📤 Lab values: {summary['recent_labs'][:3]}")
+                        if summary.get('current_medications'):
+                            logger.info(f"📤 Medications: {summary['current_medications'][:3]}")
+                        if summary.get('risk_events'):
+                            logger.info(f"📤 Risk events: {summary['risk_events'][:2]}")
+                        if summary.get('key_events'):
+                            logger.info(f"📤 Key events: {summary['key_events'][:2]}")
+                        
                         if pulmonary_locations:
                             logger.info(f"🔍 Pulmonary info found in: {pulmonary_locations}")
                         result = json.dumps(summary, indent=2)
