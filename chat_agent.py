@@ -94,7 +94,7 @@ class RAGRetriever:
                     item_keys = list(item.keys())
                     logger.info(f"Item {idx} keys: {item_keys}")
                     
-                    # Extract patient profile data
+                    # Extract patient profile data (highest priority)
                     if 'patientProfile' in item:
                         context["data"]["patient_profile"] = item['patientProfile']
                         logger.info(f"Found patientProfile")
@@ -118,31 +118,101 @@ class RAGRetriever:
                         context["data"]["patient_context"]["primaryDiagnosis"] = item['primaryDiagnosis']
                         logger.info(f"Found primaryDiagnosis")
                     
-                    # Check for adverse events / risk events
+                    # Extract adverse events / risk events (flexible naming)
                     if 'adverseEvents' in item:
                         context["data"]["risk_events"] = {"events": item['adverseEvents']}
+                    elif 'risks' in item:
+                        context["data"]["risk_events"] = item['risks']
+                    elif 'events' in item:
+                        if 'risk_events' not in context["data"]:
+                            context["data"]["risk_events"] = {"events": item['events']}
                     
-                    # Check for medications
-                    if 'medications' in item or 'currentMedications' in item:
-                        meds = item.get('medications') or item.get('currentMedications', [])
-                        context["data"]["medication_track"] = {"medications": meds}
+                    # Extract medications (flexible naming)
+                    if 'medications' in item:
+                        context["data"]["medication_track"] = {"medications": item['medications']}
+                    elif 'currentMedications' in item:
+                        context["data"]["medication_track"] = {"medications": item['currentMedications']}
+                    elif 'medicationTimeline' in item:
+                        context["data"]["medication_track"] = item['medicationTimeline']
                     
-                    # Check for lab results
-                    if 'labResults' in item or 'labs' in item or 'biomarkers' in item:
-                        labs = item.get('labResults') or item.get('labs') or item.get('biomarkers', [])
-                        context["data"]["lab_track"] = {"biomarkers": labs}
+                    # Extract lab results (flexible naming) - merge all lab data
+                    if 'labResults' in item:
+                        if 'lab_track' not in context["data"]:
+                            context["data"]["lab_track"] = {}
+                        if 'labs' not in context["data"]["lab_track"]:
+                            context["data"]["lab_track"]["labs"] = []
+                        if isinstance(item['labResults'], list):
+                            context["data"]["lab_track"]["labs"].extend(item['labResults'])
+                        else:
+                            context["data"]["lab_track"]["labs"].append(item['labResults'])
+                        logger.info(f"Found labResults: {len(item['labResults']) if isinstance(item['labResults'], list) else 1} items")
                     
-                    # Check for encounters/visits
-                    if 'encounters' in item or 'visits' in item:
-                        encounters = item.get('encounters') or item.get('visits', [])
-                        context["data"]["encounters"] = {"encounters": encounters}
+                    if 'labs' in item:
+                        if 'lab_track' not in context["data"]:
+                            context["data"]["lab_track"] = {}
+                        if 'labs' not in context["data"]["lab_track"]:
+                            context["data"]["lab_track"]["labs"] = []
+                        if isinstance(item['labs'], list):
+                            context["data"]["lab_track"]["labs"].extend(item['labs'])
+                        else:
+                            context["data"]["lab_track"]["labs"].append(item['labs'])
+                        logger.info(f"Found labs: {len(item['labs']) if isinstance(item['labs'], list) else 1} items")
                     
-                    # Store the entire item if it has many fields (might be the main patient object)
-                    if len(item_keys) > 5:
-                        # This looks like a comprehensive patient object
-                        for key, value in item.items():
-                            if key not in context["data"]:
-                                context["data"][key] = value
+                    if 'biomarkers' in item:
+                        if 'lab_track' not in context["data"]:
+                            context["data"]["lab_track"] = {}
+                        if 'biomarkers' not in context["data"]["lab_track"]:
+                            context["data"]["lab_track"]["biomarkers"] = []
+                        if isinstance(item['biomarkers'], list):
+                            context["data"]["lab_track"]["biomarkers"].extend(item['biomarkers'])
+                        else:
+                            context["data"]["lab_track"]["biomarkers"].append(item['biomarkers'])
+                        logger.info(f"Found biomarkers: {len(item['biomarkers']) if isinstance(item['biomarkers'], list) else 1} items")
+                    
+                    if 'chartData' in item:
+                        if 'lab_track' not in context["data"]:
+                            context["data"]["lab_track"] = {}
+                        context["data"]["lab_track"]["chartData"] = item['chartData']
+                        logger.info(f"Found chartData for labs")
+                    
+                    # Extract encounters/visits (flexible naming)
+                    if 'encounters' in item and isinstance(item['encounters'], list):
+                        if 'encounters' not in context["data"]:
+                            context["data"]["encounters"] = {"encounters": []}
+                        context["data"]["encounters"]["encounters"].extend(item['encounters'])
+                    elif 'encounter' in item:
+                        if 'encounters' not in context["data"]:
+                            context["data"]["encounters"] = {"encounters": []}
+                        context["data"]["encounters"]["encounters"].append(item['encounter'])
+                    elif 'visits' in item:
+                        context["data"]["encounters"] = {"encounters": item['visits']}
+                    
+                    # Extract clinical actions/recommendations
+                    if 'clinicalActions' in item:
+                        context["data"]["clinical_actions"] = item['clinicalActions']
+                    
+                    # Extract risk analysis
+                    if 'riskAnalysis' in item:
+                        context["data"]["risk_analysis"] = item['riskAnalysis']
+                    
+                    # Extract any specialty-specific data (respiratory, cardiovascular, etc.)
+                    # Store them generically so they're available regardless of specialty
+                    specialty_fields = [
+                        'respiratoryData', 'pulmonaryFunction', 'spirometry',
+                        'cardiovascularData', 'echocardiogram', 'ekg',
+                        'neurologicalData', 'imagingStudies', 'biopsyResults',
+                        'vitalSigns', 'symptoms', 'physicalExam',
+                        'allergyData', 'immunizations', 'socialHistory',
+                        'familyHistory', 'procedures', 'consultations'
+                    ]
+                    
+                    for field in specialty_fields:
+                        if field in item:
+                            context["data"][field] = item[field]
+                            logger.info(f"Found specialty data: {field}")
+                    
+                    # Don't store raw fields - we've already normalized the important ones above
+                    # This prevents duplicate data with different key names
                         
             elif isinstance(board_data, dict) and "items" in board_data:
                 items = board_data["items"]
@@ -385,53 +455,63 @@ class ToolExecutor:
     # Tool Implementation Methods
     
     def get_patient_labs(self, patient_id: str, biomarker: Optional[str] = None) -> Dict[str, Any]:
-        """Retrieve patient laboratory results."""
+        """Retrieve patient laboratory results from board context."""
         try:
-            # Try to get from loaded context first
+            # Get from loaded board context
             lab_data = None
             if self.context_data_ref and isinstance(self.context_data_ref, dict):
                 context = self.context_data_ref.get("data", {})
                 lab_data = context.get("lab_track") or context.get("labs") or context.get("labResults")
+                logger.info(f"Lab data lookup: lab_track exists={bool(context.get('lab_track'))}, type={type(lab_data)}")
+                if lab_data and isinstance(lab_data, dict):
+                    logger.info(f"Lab data keys: {list(lab_data.keys())}")
             
-            # Fallback to GCS if not in context
+            # If not in context, return not found
             if not lab_data:
-                lab_data = json.loads(
-                    self.gcs.read_file_as_string(f"patient_data/{patient_id}/board_items/dashboard_lab_track.json")
-                )
+                logger.warning(f"No lab data in context for patient {patient_id}")
+                return {"status": "not_found", "message": f"No laboratory results found in patient board for {patient_id}."}
             
-            # Handle both list and dict formats
+            # Handle both list and dict formats - check all possible keys
+            biomarkers = []
             if isinstance(lab_data, list):
                 biomarkers = lab_data
             elif isinstance(lab_data, dict):
-                biomarkers = lab_data.get("biomarkers", [])
-            else:
-                biomarkers = []
+                # Try multiple keys where lab data might be stored
+                biomarkers = lab_data.get("biomarkers", []) or lab_data.get("labs", []) or lab_data.get("labResults", [])
+                
+                # If still empty, check if chartData has biomarkers
+                if not biomarkers and "chartData" in lab_data:
+                    chart_data = lab_data["chartData"]
+                    if isinstance(chart_data, dict) and "biomarkers" in chart_data:
+                        biomarkers = chart_data["biomarkers"]
+            
+            logger.info(f"Extracted {len(biomarkers)} biomarkers from lab data")
             
             if biomarker:
                 # Filter for specific biomarker
                 filtered = [item for item in biomarkers 
-                           if biomarker.lower() in item.get("name", "").lower()]
+                           if biomarker.lower() in str(item.get("name", "")).lower()]
                 return {"status": "success", "biomarkers": filtered, "count": len(filtered)}
             
             return {"status": "success", "biomarkers": biomarkers, "count": len(biomarkers)}
         except Exception as e:
-            logger.warning(f"No lab data for patient {patient_id}: {e}")
-            return {"status": "not_found", "message": f"No laboratory results found for patient {patient_id}."}
+            logger.error(f"Error getting lab data for patient {patient_id}: {e}")
+            import traceback
+            traceback.print_exc()
+            return {"status": "error", "message": f"Error retrieving laboratory results: {str(e)}"}
     
     def get_patient_medications(self, patient_id: str, active_only: bool = False) -> Dict[str, Any]:
-        """Retrieve patient medications."""
+        """Retrieve patient medications from board context."""
         try:
-            # Try to get from loaded context first
+            # Get from loaded board context
             med_data = None
             if self.context_data_ref and isinstance(self.context_data_ref, dict):
                 context = self.context_data_ref.get("data", {})
                 med_data = context.get("medication_track") or context.get("medications") or context.get("medicationTimeline")
             
-            # Fallback to GCS if not in context
+            # If not in context, return not found
             if not med_data:
-                med_data = json.loads(
-                    self.gcs.read_file_as_string(f"patient_data/{patient_id}/board_items/dashboard_medication_track.json")
-                )
+                return {"status": "not_found", "message": f"No medication records found in patient board for {patient_id}."}
             
             # Handle both list and dict formats
             if isinstance(med_data, list):
@@ -454,19 +534,20 @@ class ToolExecutor:
             return {"status": "not_found", "message": f"No medication records found for patient {patient_id}."}
     
     def get_patient_encounters(self, patient_id: str, limit: int = 10) -> Dict[str, Any]:
-        """Retrieve patient encounters."""
+        """Retrieve patient encounters from board context."""
         try:
-            # Try to get from loaded context first
+            # Get from loaded board context
             encounter_data = None
             if self.context_data_ref and isinstance(self.context_data_ref, dict):
                 context = self.context_data_ref.get("data", {})
                 encounter_data = context.get("encounters") or context.get("encounter")
             
-            # Fallback to GCS if not in context
+            # If not in context, return not found
             if not encounter_data:
-                encounter_data = json.loads(
-                    self.gcs.read_file_as_string(f"patient_data/{patient_id}/board_items/encounters.json")
-                )
+                return {
+                    "status": "not_found",
+                    "message": f"No encounter records found in patient board for {patient_id}."
+                }
             
             # Handle both list and dict formats
             if isinstance(encounter_data, list):
@@ -489,33 +570,57 @@ class ToolExecutor:
             }
     
     def search_patient_data(self, patient_id: str, query: str) -> Dict[str, Any]:
-        """Search patient data for query."""
+        """Search patient data for query in loaded board context."""
         try:
-            # Retrieve all patient data
-            files = [
-                f"patient_data/{patient_id}/patient_profile.txt",
-                f"patient_data/{patient_id}/board_items/patient_context.json",
-            ]
-            
             results = []
-            for file_path in files:
-                try:
-                    content = self.gcs.read_file_as_string(file_path)
-                    if content and query.lower() in content.lower():
-                        results.append({
-                            "source": file_path.split("/")[-1] if file_path else "unknown",
-                            "snippet": self._extract_snippet(content, query)
-                        })
-                except:
-                    continue
+            query_lower = query.lower()
+            query_words = query_lower.split()  # Split query into words for better matching
             
-            return {
-                "query": query,
-                "results": results,
-                "count": len(results)
-            }
+            if not self.context_data_ref or not isinstance(self.context_data_ref, dict):
+                return {
+                    "status": "error",
+                    "message": "Patient context not loaded from board. Please ensure the patient board data is available.",
+                    "query": query
+                }
+            
+            context = self.context_data_ref.get("data", {})
+            
+            # Search through all context data
+            for key, value in context.items():
+                value_str = json.dumps(value, indent=2) if isinstance(value, (dict, list)) else str(value)
+                value_lower = value_str.lower()
+                
+                # Check if query or any query word matches
+                if query_lower in value_lower or any(word in value_lower for word in query_words if len(word) > 2):
+                    results.append({
+                        "source": key,
+                        "snippet": self._extract_snippet(value_str, query, context_chars=300),
+                        "relevance": "high" if query_lower in value_lower else "partial"
+                    })
+            
+            # Return results (even if empty)
+            if results:
+                logger.info(f"Search found {len(results)} results in board context for query: {query}")
+                return {
+                    "status": "success",
+                    "query": query,
+                    "results": results,
+                    "count": len(results),
+                    "source": "board_context"
+                }
+            else:
+                logger.info(f"No results found in board context for query: {query}")
+                return {
+                    "status": "success",
+                    "query": query,
+                    "results": [],
+                    "count": 0,
+                    "message": "No matching data found in patient board context.",
+                    "source": "board_context"
+                }
         except Exception as e:
-            return {"error": f"Search failed: {e}"}
+            logger.error(f"Search failed: {e}")
+            return {"status": "error", "error": f"Search failed: {e}"}
     
     def calculate_drug_interaction(self, drug_a: str, drug_b: str) -> Dict[str, Any]:
         """
@@ -699,8 +804,67 @@ class ChatAgent:
                         context_parts.append(f"- {event.get('date')}: {event.get('type')} - {event.get('description', 'N/A')}\n")
                     context_parts.append("\n")
         
+        # Add specialty-specific data sections dynamically
+        specialty_sections = {
+            'respiratoryData': ('Respiratory Data', 'Pulmonary/Respiratory'),
+            'pulmonaryFunction': ('Pulmonary Function Tests', 'PFT Results'),
+            'spirometry': ('Spirometry Results', 'Spirometry'),
+            'cardiovascularData': ('Cardiovascular Data', 'Cardiac'),
+            'echocardiogram': ('Echocardiogram Results', 'Echo'),
+            'ekg': ('EKG/ECG Results', 'EKG'),
+            'neurologicalData': ('Neurological Data', 'Neuro'),
+            'imagingStudies': ('Imaging Studies', 'Imaging'),
+            'biopsyResults': ('Biopsy Results', 'Biopsy'),
+            'vitalSigns': ('Vital Signs', 'Vitals'),
+            'symptoms': ('Current Symptoms', 'Symptoms'),
+            'physicalExam': ('Physical Examination', 'PE'),
+            'allergyData': ('Allergies', 'Allergies'),
+            'immunizations': ('Immunizations', 'Vaccines'),
+            'socialHistory': ('Social History', 'SH'),
+            'familyHistory': ('Family History', 'FH'),
+            'procedures': ('Procedures', 'Procedures'),
+            'consultations': ('Consultations', 'Consults'),
+            'clinical_actions': ('Clinical Actions', 'Actions'),
+            'risk_analysis': ('Risk Analysis', 'Risk Assessment')
+        }
+        
+        # Add any specialty-specific data that exists
+        for field_key, (section_title, short_name) in specialty_sections.items():
+            if data.get(field_key):
+                field_data = data[field_key]
+                context_parts.append(f"## {section_title}\n")
+                
+                if isinstance(field_data, dict):
+                    # Show key-value pairs
+                    for key, value in field_data.items():
+                        if key not in ['id', 'x', 'y', 'width', 'height', 'zone', 'componentType']:
+                            if isinstance(value, (list, dict)):
+                                # Show count for complex structures
+                                if isinstance(value, list):
+                                    context_parts.append(f"- {key}: {len(value)} items\n")
+                                else:
+                                    context_parts.append(f"- {key}: {json.dumps(value, indent=2)}\n")
+                            else:
+                                context_parts.append(f"- {key}: {value}\n")
+                elif isinstance(field_data, list):
+                    # Show list items
+                    context_parts.append(f"({len(field_data)} items)\n")
+                    for item in field_data[:3]:  # Show first 3
+                        if isinstance(item, dict):
+                            summary = item.get('summary') or item.get('name') or item.get('title') or str(item)[:100]
+                            context_parts.append(f"- {summary}\n")
+                        else:
+                            context_parts.append(f"- {item}\n")
+                    if len(field_data) > 3:
+                        context_parts.append(f"... and {len(field_data) - 3} more\n")
+                else:
+                    # Simple string or other type
+                    context_parts.append(f"{field_data}\n")
+                
+                context_parts.append("\n")
+        
         context_parts.append("=== END PATIENT CONTEXT ===\n\n")
-        context_parts.append("IMPORTANT: Use the above patient context to answer questions about the patient's name, demographics, medical history, medications, lab results, and encounters. Do not say you don't have access to this information if it's provided above.\n\n")
+        context_parts.append("IMPORTANT: Use the above patient context to answer questions about the patient's name, demographics, medical history, medications, lab results, encounters, and any specialty-specific data (respiratory, cardiovascular, etc.). The board dynamically shows relevant data for this patient's condition. Do not say you don't have access to this information if it's provided above.\n\n")
         
         return "".join(context_parts)
     

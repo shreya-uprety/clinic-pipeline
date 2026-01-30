@@ -444,7 +444,7 @@
 
             <div class="control-row">
                 <label>Patient ID:</label>
-                <input type="text" id="patientId" value="p0001" placeholder="Enter patient ID">
+                <input type="text" id="patientId" value="p0001" placeholder="Enter patient ID" onchange="updateBoardLink()">
             </div>
 
             <div class="control-row">
@@ -454,8 +454,8 @@
 
             <div class="control-row">
                 <label>Board URL:</label>
-                <a href="https://iso-clinic-v3.vercel.app/board/p0001" target="_blank" style="padding: 10px; color: #667eea; text-decoration: none; font-weight: 600;">
-                    🏥 Open Board (p0001)
+                <a id="boardLink" href="https://iso-clinic-v3.vercel.app/board/p0001" target="_blank" style="padding: 10px; color: #667eea; text-decoration: none; font-weight: 600;">
+                    🏥 Open Board (<span id="boardPatientId">p0001</span>)
                 </a>
             </div>
 
@@ -607,6 +607,15 @@
             }
         }
 
+        function updateBoardLink() {
+            const patientId = document.getElementById('patientId').value || 'p0001';
+            const boardLink = document.getElementById('boardLink');
+            const boardPatientId = document.getElementById('boardPatientId');
+            
+            boardLink.href = `https://iso-clinic-v3.vercel.app/board/${patientId}`;
+            boardPatientId.textContent = patientId;
+        }
+
         async function connect() {
             const patientId = document.getElementById('patientId').value;
             const serverUrl = document.getElementById('serverUrl').value;
@@ -615,6 +624,9 @@
                 alert('Please enter a patient ID');
                 return;
             }
+            
+            // Update board link when connecting
+            updateBoardLink();
             
             try {
                 updateStatus('Connecting...', 'disconnected');

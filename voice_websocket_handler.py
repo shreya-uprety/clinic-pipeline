@@ -49,29 +49,15 @@ class VoiceWebSocketHandler:
                 if not self.chat_agent.context_data:
                     await self.chat_agent._load_patient_context()
                 
-                # Build context summary for system prompt
-                if self.chat_agent.context_data and self.chat_agent.context_data.get("data"):
-                    data = self.chat_agent.context_data["data"]
-                    context_info = "\n\n--- LOADED PATIENT DATA ---\n"
-                    
-                    if data.get("patient_profile"):
-                        context_info += f"Patient Profile: {str(data['patient_profile'])[:500]}\n"
-                    
-                    if data.get("basic_info"):
-                        context_info += f"Basic Info: {str(data['basic_info'])[:300]}\n"
-                    
-                    if data.get("patient_context"):
-                        context_info += f"Clinical Context: {str(data['patient_context'])[:300]}\n"
-                    
-                    context_info += "--- END LOADED DATA ---\n"
+                # Use the same context building method as chat agent
+                context_info = self.chat_agent._build_context_prompt()
             
             # Add patient-specific context
-            return f"""{base_prompt}
+            full_instruction = f"""{base_prompt}
 
 --- PATIENT-SPECIFIC CONTEXT ---
 Current Patient ID: {self.patient_id}
 Board URL: https://iso-clinic-v3.vercel.app/board/{self.patient_id}
-{context_info}
 
 CRITICAL INSTRUCTIONS:
 - You are currently helping with patient ID: {self.patient_id}
@@ -79,10 +65,17 @@ CRITICAL INSTRUCTIONS:
 - When using tools, ALWAYS use patient_id: {self.patient_id}
 - NEVER ask for patient ID - you already know it is {self.patient_id}
 - All data queries should reference patient {self.patient_id}
-- Patient information is loaded above - use it to answer questions
+
+{context_info}
 """
+            
+            logger.info(f"✅ Voice system instruction includes {len(context_info)} chars of patient context")
+            return full_instruction
+            
         except Exception as e:
             logger.error(f"Failed to load system prompt: {e}")
+            import traceback
+            traceback.print_exc()
             # Fallback to basic prompt
             return f"""You are MedForce Agent — a real-time conversational AI assistant.
 Current Patient ID: {self.patient_id}
