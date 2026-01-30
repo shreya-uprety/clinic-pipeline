@@ -14,13 +14,19 @@ BASE_URL = patient_manager.get_base_url()
 print("#### canvas_ops.py CANVAS_URL : ",BASE_URL)
 print("#### Current Patient ID: ", patient_manager.get_patient_id())
 
-with open("object_desc.json", "r", encoding="utf-8") as f:
-    object_desc = json.load(f)
+# Load object descriptions if available (optional)
 object_desc_data = {}
 existing_desc_ids = []
-for o in object_desc:
-    object_desc_data[o['id']] = o['description']
-    existing_desc_ids.append(o['id'])
+try:
+    with open("object_desc.json", "r", encoding="utf-8") as f:
+        object_desc = json.load(f)
+    for o in object_desc:
+        object_desc_data[o['id']] = o['description']
+        existing_desc_ids.append(o['id'])
+except FileNotFoundError:
+    print("ℹ️ object_desc.json not found, descriptions will be skipped")
+except Exception as e:
+    print(f"⚠️ Error loading object_desc.json: {e}")
 
 def board_items_process(data):
     exclude_keys = ["x","y","width","height","createdAt","updatedAt","color","rotation", "draggable"]

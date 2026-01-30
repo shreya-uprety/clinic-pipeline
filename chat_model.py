@@ -1,4 +1,7 @@
+import warnings
 from google.genai.types import GenerateContentConfig
+# Suppress deprecation warning for google.generativeai (agent-2.9 legacy code)
+warnings.filterwarnings('ignore', category=FutureWarning, module='google.generativeai')
 import google.generativeai as genai
 import time
 import json
