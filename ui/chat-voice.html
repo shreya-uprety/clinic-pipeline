@@ -444,12 +444,19 @@
 
             <div class="control-row">
                 <label>Patient ID:</label>
-                <input type="text" id="patientId" value="P0001" placeholder="Enter patient ID">
+                <input type="text" id="patientId" value="p0001" placeholder="Enter patient ID">
             </div>
 
             <div class="control-row">
                 <label>Server URL:</label>
-                <input type="text" id="serverUrl" value="http://localhost:8000" placeholder="Server URL">
+                <input type="text" id="serverUrl" value="http://localhost:8080" placeholder="Server URL">
+            </div>
+
+            <div class="control-row">
+                <label>Board URL:</label>
+                <a href="https://iso-clinic-v3.vercel.app/board/p0001" target="_blank" style="padding: 10px; color: #667eea; text-decoration: none; font-weight: 600;">
+                    🏥 Open Board (p0001)
+                </a>
             </div>
 
             <div class="control-row">
@@ -794,7 +801,6 @@
                 
                 mediaStream = await navigator.mediaDevices.getUserMedia({
                     audio: {
-                        sampleRate: 16000,
                         channelCount: 1,
                         echoCancellation: true,
                         noiseSuppression: true,
@@ -802,10 +808,17 @@
                     }
                 });
                 
-                audioContext = new AudioContext({ sampleRate: 16000 });
+                // Force 16kHz sample rate
+                audioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
+                
+                // Verify the actual sample rate
+                console.log('AudioContext sample rate:', audioContext.sampleRate);
+                
                 const source = audioContext.createMediaStreamSource(mediaStream);
                 
-                scriptProcessor = audioContext.createScriptProcessor(4096, 1, 1);
+                // Use larger buffer for more stable processing
+                const bufferSize = 2048;
+                scriptProcessor = audioContext.createScriptProcessor(bufferSize, 1, 1);
                 
                 scriptProcessor.onaudioprocess = (e) => {
                     if (!isVoiceActive || !ws || ws.readyState !== WebSocket.OPEN) return;
@@ -813,13 +826,13 @@
                     const inputData = e.inputBuffer.getChannelData(0);
                     const pcmData = new Int16Array(inputData.length);
                     
+                    // Convert float32 to int16
                     for (let i = 0; i < inputData.length; i++) {
                         const s = Math.max(-1, Math.min(1, inputData[i]));
                         pcmData[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
                     }
                     
-                    // Just send audio - no automatic interruption
-                    // User can say "stop" or click the button to interrupt
+                    // Send PCM audio data
                     ws.send(pcmData.buffer);
                     visualizeAudio(pcmData);
                 };
@@ -827,10 +840,11 @@
                 source.connect(scriptProcessor);
                 scriptProcessor.connect(audioContext.destination);
                 
-                log('✅ Microphone ready', 'system');
+                log('✅ Microphone ready (16kHz PCM)', 'system');
                 
             } catch (error) {
                 log(`❌ Microphone error: ${error.message}`, 'system');
+                console.error('Audio init error:', error);
             }
         }
 

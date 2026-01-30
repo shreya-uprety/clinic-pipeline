@@ -21,6 +21,7 @@ from datetime import datetime
 from google import genai
 from google.genai import types
 import bucket_ops
+import httpx
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -32,25 +33,28 @@ logger = logging.getLogger("chat-agent")
 MODEL = "gemini-2.5-flash-lite"
 MODEL_ADVANCED = "gemini-2.5-flash-lite"  # Use same model as existing agents
 
+# Board URL configuration
+BOARD_BASE_URL = "https://iso-clinic-v3.vercel.app"
+
 
 class RAGRetriever:
     """
     Retrieval-Augmented Generation (RAG) component.
-    Retrieves relevant context from patient data stored in GCS.
+    Retrieves relevant context from patient board data via API.
     """
     
-    def __init__(self, gcs_manager: bucket_ops.GCSBucketManager):
+    def __init__(self, board_base_url: str = BOARD_BASE_URL):
         """
         Initialize RAG retriever.
         
         Args:
-            gcs_manager: GCS bucket manager instance
+            board_base_url: Base URL for the board API
         """
-        self.gcs = gcs_manager
+        self.board_base_url = board_base_url
         
-    def retrieve_patient_context(self, patient_id: str) -> Dict[str, Any]:
+    async def retrieve_patient_context(self, patient_id: str) -> Dict[str, Any]:
         """
-        Retrieve all relevant patient data for context.
+        Retrieve all relevant patient data from the board.
         
         Args:
             patient_id: Patient identifier
@@ -64,31 +68,137 @@ class RAGRetriever:
             "data": {}
         }
         
-        # Define data sources to retrieve
-        data_sources = [
-            ("patient_profile", f"patient_data/{patient_id}/patient_profile.txt"),
-            ("basic_info", f"patient_data/{patient_id}/basic_info.json"),
-            ("encounters", f"patient_data/{patient_id}/board_items/encounters.json"),
-            ("patient_context", f"patient_data/{patient_id}/board_items/patient_context.json"),
-            ("lab_track", f"patient_data/{patient_id}/board_items/dashboard_lab_track.json"),
-            ("medication_track", f"patient_data/{patient_id}/board_items/dashboard_medication_track.json"),
-            ("risk_events", f"patient_data/{patient_id}/board_items/dashboard_risk_event_track.json"),
-            ("referral", f"patient_data/{patient_id}/board_items/referral.json"),
-        ]
-        
-        for key, path in data_sources:
-            try:
-                content = self.gcs.read_file_as_string(path)
-                # Try to parse as JSON if possible
-                try:
-                    context["data"][key] = json.loads(content)
-                except json.JSONDecodeError:
-                    context["data"][key] = content
+        try:
+            # Fetch board items from the API
+            board_url = f"{self.board_base_url}/api/board-items?patientId={patient_id}"
+            logger.info(f"Fetching board data from: {board_url}")
+            
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.get(board_url)
+                response.raise_for_status()
+                board_data = response.json()
+                
+            logger.info(f"✅ Successfully fetched board data for patient {patient_id}")
+            logger.info(f"Board data structure: {type(board_data)}, keys: {list(board_data.keys()) if isinstance(board_data, dict) else 'N/A'}")
+            
+            # Parse and organize the board data
+            if isinstance(board_data, list):
+                # Board returns a list of items directly
+                logger.info(f"Processing {len(board_data)} board items...")
+                
+                for idx, item in enumerate(board_data):
+                    if not isinstance(item, dict):
+                        continue
                     
-                logger.info(f"Retrieved {key} for patient {patient_id}")
-            except Exception as e:
-                logger.warning(f"Could not retrieve {key}: {e}")
-                context["data"][key] = None
+                    # Log the keys of this item for debugging
+                    item_keys = list(item.keys())
+                    logger.info(f"Item {idx} keys: {item_keys}")
+                    
+                    # Extract patient profile data
+                    if 'patientProfile' in item:
+                        context["data"]["patient_profile"] = item['patientProfile']
+                        logger.info(f"Found patientProfile")
+                    
+                    # Extract patient basic data
+                    if 'patient' in item and isinstance(item['patient'], dict):
+                        context["data"]["basic_info"] = item['patient']
+                        logger.info(f"Found patient data: {list(item['patient'].keys())}")
+                    
+                    # Extract patientData
+                    if 'patientData' in item:
+                        if 'patient_context' not in context["data"]:
+                            context["data"]["patient_context"] = {}
+                        context["data"]["patient_context"].update(item['patientData'])
+                        logger.info(f"Found patientData")
+                    
+                    # Extract primary diagnosis
+                    if 'primaryDiagnosis' in item:
+                        if 'patient_context' not in context["data"]:
+                            context["data"]["patient_context"] = {}
+                        context["data"]["patient_context"]["primaryDiagnosis"] = item['primaryDiagnosis']
+                        logger.info(f"Found primaryDiagnosis")
+                    
+                    # Check for adverse events / risk events
+                    if 'adverseEvents' in item:
+                        context["data"]["risk_events"] = {"events": item['adverseEvents']}
+                    
+                    # Check for medications
+                    if 'medications' in item or 'currentMedications' in item:
+                        meds = item.get('medications') or item.get('currentMedications', [])
+                        context["data"]["medication_track"] = {"medications": meds}
+                    
+                    # Check for lab results
+                    if 'labResults' in item or 'labs' in item or 'biomarkers' in item:
+                        labs = item.get('labResults') or item.get('labs') or item.get('biomarkers', [])
+                        context["data"]["lab_track"] = {"biomarkers": labs}
+                    
+                    # Check for encounters/visits
+                    if 'encounters' in item or 'visits' in item:
+                        encounters = item.get('encounters') or item.get('visits', [])
+                        context["data"]["encounters"] = {"encounters": encounters}
+                    
+                    # Store the entire item if it has many fields (might be the main patient object)
+                    if len(item_keys) > 5:
+                        # This looks like a comprehensive patient object
+                        for key, value in item.items():
+                            if key not in context["data"]:
+                                context["data"][key] = value
+                        
+            elif isinstance(board_data, dict) and "items" in board_data:
+                items = board_data["items"]
+                
+                # Organize items by type
+                for item in items:
+                    item_type = item.get("type", "unknown")
+                    
+                    if item_type == "patient_context":
+                        context["data"]["patient_context"] = item.get("data", {})
+                    elif item_type == "basic_info":
+                        context["data"]["basic_info"] = item.get("data", {})
+                    elif item_type == "encounters":
+                        context["data"]["encounters"] = item.get("data", {})
+                    elif item_type == "lab_track" or item_type == "dashboard_lab_track":
+                        context["data"]["lab_track"] = item.get("data", {})
+                    elif item_type == "medication_track" or item_type == "dashboard_medication_track":
+                        context["data"]["medication_track"] = item.get("data", {})
+                    elif item_type == "risk_events" or item_type == "dashboard_risk_event_track":
+                        context["data"]["risk_events"] = item.get("data", {})
+                    elif item_type == "referral":
+                        context["data"]["referral"] = item.get("data", {})
+                        
+            elif isinstance(board_data, list):
+                # If the API returns a list directly
+                for item in board_data:
+                    item_type = item.get("type", "unknown")
+                    
+                    if item_type == "patient_context":
+                        context["data"]["patient_context"] = item.get("data", {})
+                    elif item_type == "basic_info":
+                        context["data"]["basic_info"] = item.get("data", {})
+                    elif item_type == "encounters":
+                        context["data"]["encounters"] = item.get("data", {})
+                    elif item_type == "lab_track" or item_type == "dashboard_lab_track":
+                        context["data"]["lab_track"] = item.get("data", {})
+                    elif item_type == "medication_track" or item_type == "dashboard_medication_track":
+                        context["data"]["medication_track"] = item.get("data", {})
+                    elif item_type == "risk_events" or item_type == "dashboard_risk_event_track":
+                        context["data"]["risk_events"] = item.get("data", {})
+                    elif item_type == "referral":
+                        context["data"]["referral"] = item.get("data", {})
+            else:
+                # Store the raw data
+                context["data"]["raw_board_data"] = board_data
+                
+            logger.info(f"Parsed board data types: {list(context['data'].keys())}")
+            
+        except httpx.HTTPError as e:
+            logger.error(f"HTTP error fetching board data: {e}")
+            context["data"]["error"] = str(e)
+        except Exception as e:
+            logger.error(f"Error fetching board data: {e}")
+            import traceback
+            traceback.print_exc()
+            context["data"]["error"] = str(e)
                 
         return context
     
@@ -115,14 +225,16 @@ class ToolExecutor:
     Supports various medical and administrative tools.
     """
     
-    def __init__(self, gcs_manager: bucket_ops.GCSBucketManager):
+    def __init__(self, gcs_manager: bucket_ops.GCSBucketManager, context_data_ref: Optional[Dict] = None):
         """
         Initialize tool executor.
         
         Args:
             gcs_manager: GCS bucket manager instance
+            context_data_ref: Reference to context data (from board)
         """
         self.gcs = gcs_manager
+        self.context_data_ref = context_data_ref
         self.tools = self._register_tools()
         
     def _register_tools(self) -> Dict[str, Callable]:
@@ -275,9 +387,17 @@ class ToolExecutor:
     def get_patient_labs(self, patient_id: str, biomarker: Optional[str] = None) -> Dict[str, Any]:
         """Retrieve patient laboratory results."""
         try:
-            lab_data = json.loads(
-                self.gcs.read_file_as_string(f"patient_data/{patient_id}/board_items/dashboard_lab_track.json")
-            )
+            # Try to get from loaded context first
+            lab_data = None
+            if self.context_data_ref and isinstance(self.context_data_ref, dict):
+                context = self.context_data_ref.get("data", {})
+                lab_data = context.get("lab_track") or context.get("labs") or context.get("labResults")
+            
+            # Fallback to GCS if not in context
+            if not lab_data:
+                lab_data = json.loads(
+                    self.gcs.read_file_as_string(f"patient_data/{patient_id}/board_items/dashboard_lab_track.json")
+                )
             
             # Handle both list and dict formats
             if isinstance(lab_data, list):
@@ -301,9 +421,17 @@ class ToolExecutor:
     def get_patient_medications(self, patient_id: str, active_only: bool = False) -> Dict[str, Any]:
         """Retrieve patient medications."""
         try:
-            med_data = json.loads(
-                self.gcs.read_file_as_string(f"patient_data/{patient_id}/board_items/dashboard_medication_track.json")
-            )
+            # Try to get from loaded context first
+            med_data = None
+            if self.context_data_ref and isinstance(self.context_data_ref, dict):
+                context = self.context_data_ref.get("data", {})
+                med_data = context.get("medication_track") or context.get("medications") or context.get("medicationTimeline")
+            
+            # Fallback to GCS if not in context
+            if not med_data:
+                med_data = json.loads(
+                    self.gcs.read_file_as_string(f"patient_data/{patient_id}/board_items/dashboard_medication_track.json")
+                )
             
             # Handle both list and dict formats
             if isinstance(med_data, list):
@@ -328,9 +456,17 @@ class ToolExecutor:
     def get_patient_encounters(self, patient_id: str, limit: int = 10) -> Dict[str, Any]:
         """Retrieve patient encounters."""
         try:
-            encounter_data = json.loads(
-                self.gcs.read_file_as_string(f"patient_data/{patient_id}/board_items/encounters.json")
-            )
+            # Try to get from loaded context first
+            encounter_data = None
+            if self.context_data_ref and isinstance(self.context_data_ref, dict):
+                context = self.context_data_ref.get("data", {})
+                encounter_data = context.get("encounters") or context.get("encounter")
+            
+            # Fallback to GCS if not in context
+            if not encounter_data:
+                encounter_data = json.loads(
+                    self.gcs.read_file_as_string(f"patient_data/{patient_id}/board_items/encounters.json")
+                )
             
             # Handle both list and dict formats
             if isinstance(encounter_data, list):
@@ -438,51 +574,133 @@ class ChatAgent:
         )
         
         self.gcs = bucket_ops.GCSBucketManager(bucket_name="clinic_sim")
-        self.retriever = RAGRetriever(self.gcs)
-        self.tool_executor = ToolExecutor(self.gcs) if use_tools else None
+        self.retriever = RAGRetriever(board_base_url=BOARD_BASE_URL)
         
         self.patient_id = patient_id
         self.conversation_history: List[Dict[str, str]] = []
         self.context_data: Optional[Dict] = None
         
+        # Initialize tool executor with reference to context data
+        self.tool_executor = ToolExecutor(self.gcs, self.context_data) if use_tools else None
+        
         # Load patient context if patient_id provided
         if patient_id:
-            self._load_patient_context()
+            asyncio.create_task(self._load_patient_context())
     
-    def _load_patient_context(self):
+    async def _load_patient_context(self):
         """Load patient context data for RAG."""
         try:
-            self.context_data = self.retriever.retrieve_patient_context(self.patient_id)
-            logger.info(f"Loaded context for patient {self.patient_id}")
+            logger.info(f"Loading context for patient {self.patient_id}...")
+            self.context_data = await self.retriever.retrieve_patient_context(self.patient_id)
+            
+            # Update tool executor's context reference
+            if self.tool_executor:
+                self.tool_executor.context_data_ref = self.context_data
+            
+            # Log what was retrieved
+            if self.context_data and self.context_data.get("data"):
+                data_keys = list(self.context_data["data"].keys())
+                logger.info(f"✅ Loaded context for patient {self.patient_id}: {data_keys}")
+            else:
+                logger.warning(f"⚠️ No context data found for patient {self.patient_id}")
         except Exception as e:
-            logger.error(f"Failed to load patient context: {e}")
+            logger.error(f"❌ Failed to load patient context: {e}")
+            import traceback
+            traceback.print_exc()
             self.context_data = None
+    
+    async def reload_context(self):
+        """Reload patient context data (useful if data has been updated)."""
+        if self.patient_id:
+            await self._load_patient_context()
     
     def _build_context_prompt(self) -> str:
         """Build context prompt from retrieved data."""
         if not self.context_data or not self.context_data.get("data"):
             return ""
         
-        context_parts = ["=== PATIENT CONTEXT ===\n"]
+        context_parts = ["\n=== PATIENT CONTEXT (USE THIS TO ANSWER QUESTIONS) ===\n\n"]
         
         data = self.context_data["data"]
         
+        # Add patient profile first (most comprehensive)
+        if data.get("patient_profile"):
+            profile = data["patient_profile"]
+            context_parts.append("## Patient Profile\n")
+            if isinstance(profile, dict):
+                for key, value in profile.items():
+                    if key not in ['id', 'x', 'y', 'width', 'height', 'zone', 'componentType']:
+                        context_parts.append(f"- {key}: {value}\n")
+            else:
+                context_parts.append(f"{profile}\n")
+            context_parts.append("\n")
+        
+        # Add basic info (name, demographics)
+        if data.get("basic_info"):
+            basic_info = data["basic_info"]
+            context_parts.append("## Basic Patient Information\n")
+            if isinstance(basic_info, dict):
+                for key, value in basic_info.items():
+                    if key not in ['id', 'x', 'y', 'width', 'height', 'zone', 'componentType']:
+                        context_parts.append(f"- {key}: {value}\n")
+            else:
+                context_parts.append(f"{basic_info}\n")
+            context_parts.append("\n")
+        
         # Add patient profile (most important)
         if data.get("patient_profile"):
-            context_parts.append(f"## Patient Profile\n{data['patient_profile']}\n")
+            context_parts.append(f"## Patient Profile\n{data['patient_profile']}\n\n")
         
         # Add structured data summaries
         if data.get("patient_context"):
-            context_parts.append(f"## Clinical Summary\n{json.dumps(data['patient_context'], indent=2)}\n")
+            context_parts.append(f"## Clinical Summary\n{json.dumps(data['patient_context'], indent=2)}\n\n")
         
+        # Add encounters
+        if data.get("encounters"):
+            encounters = data["encounters"]
+            if isinstance(encounters, dict) and encounters.get("encounters"):
+                enc_list = encounters["encounters"]
+                context_parts.append(f"## Recent Encounters ({len(enc_list)} total)\n")
+                for enc in enc_list[:3]:  # Show top 3
+                    context_parts.append(f"- {enc.get('date')}: {enc.get('type')} - {enc.get('summary', 'N/A')}\n")
+                context_parts.append("\n")
+        
+        # Add medications
         if data.get("medication_track"):
-            meds = data["medication_track"].get("medications", [])
-            if meds:
-                context_parts.append(f"## Current Medications ({len(meds)} total)\n")
-                for med in meds[:5]:  # Show top 5
-                    context_parts.append(f"- {med.get('name')}: {med.get('dose')}\n")
+            meds_data = data["medication_track"]
+            if isinstance(meds_data, dict):
+                meds = meds_data.get("medications", [])
+                if meds:
+                    context_parts.append(f"## Current Medications ({len(meds)} total)\n")
+                    for med in meds[:5]:  # Show top 5
+                        context_parts.append(f"- {med.get('name')}: {med.get('dose', 'N/A')}\n")
+                    context_parts.append("\n")
         
-        context_parts.append("\n=== END CONTEXT ===\n")
+        # Add lab tracking
+        if data.get("lab_track"):
+            lab_data = data["lab_track"]
+            if isinstance(lab_data, dict) and lab_data.get("biomarkers"):
+                context_parts.append(f"## Lab Results Summary\n")
+                biomarkers = lab_data.get("biomarkers", [])
+                for biomarker in biomarkers[:5]:  # Show top 5
+                    name = biomarker.get("name", "Unknown")
+                    latest = biomarker.get("latest_value", "N/A")
+                    context_parts.append(f"- {name}: {latest}\n")
+                context_parts.append("\n")
+        
+        # Add risk events
+        if data.get("risk_events"):
+            risk_data = data["risk_events"]
+            if isinstance(risk_data, dict) and risk_data.get("events"):
+                events = risk_data["events"]
+                if events:
+                    context_parts.append(f"## Risk Events ({len(events)} total)\n")
+                    for event in events[:3]:
+                        context_parts.append(f"- {event.get('date')}: {event.get('type')} - {event.get('description', 'N/A')}\n")
+                    context_parts.append("\n")
+        
+        context_parts.append("=== END PATIENT CONTEXT ===\n\n")
+        context_parts.append("IMPORTANT: Use the above patient context to answer questions about the patient's name, demographics, medical history, medications, lab results, and encounters. Do not say you don't have access to this information if it's provided above.\n\n")
         
         return "".join(context_parts)
     
@@ -497,9 +715,25 @@ class ChatAgent:
         Returns:
             Agent response text
         """
-        # Default system instruction
+        # Default system instruction - try to load from file
         if not system_instruction:
-            system_instruction = """You are an expert medical AI assistant specializing in hepatology and clinical care.
+            try:
+                with open("system_prompts/system_prompt.md", "r", encoding="utf-8") as f:
+                    base_prompt = f.read()
+                
+                system_instruction = f"""{base_prompt}
+
+--- PATIENT-SPECIFIC CONTEXT ---
+Current Patient ID: {self.patient_id}
+Board URL: https://iso-clinic-v3.vercel.app/board/{self.patient_id}
+
+CRITICAL INSTRUCTIONS:
+- You are currently helping with patient ID: {self.patient_id}
+- When using tools, ALWAYS use patient_id: {self.patient_id}
+"""
+            except Exception as e:
+                logger.warning(f"Failed to load system prompt, using fallback: {e}")
+                system_instruction = """You are an expert medical AI assistant specializing in hepatology and clinical care.
             
 Your capabilities:
 1. Answer medical questions using the patient context provided
@@ -516,9 +750,20 @@ Guidelines:
 
 When patient context is provided, use it to give personalized answers."""
 
+        # Ensure context is loaded
+        if self.patient_id and not self.context_data:
+            logger.info("Context not loaded yet, loading now...")
+            await self._load_patient_context()
+
         # Build full prompt with context
         context_prompt = self._build_context_prompt()
         full_message = f"{context_prompt}\n\nUser Question: {message}"
+        
+        # Debug logging
+        if context_prompt:
+            logger.info(f"Including patient context in prompt ({len(context_prompt)} chars)")
+        else:
+            logger.warning(f"No patient context available for patient {self.patient_id}")
         
         # Add to conversation history
         self.conversation_history.append({
@@ -610,7 +855,24 @@ When patient context is provided, use it to give personalized answers."""
             Response chunks as they arrive
         """
         if not system_instruction:
-            system_instruction = "You are a helpful medical AI assistant."
+            try:
+                with open("system_prompts/system_prompt.md", "r", encoding="utf-8") as f:
+                    base_prompt = f.read()
+                
+                system_instruction = f"""{base_prompt}
+
+--- PATIENT-SPECIFIC CONTEXT ---
+Current Patient ID: {self.patient_id}
+Board URL: https://iso-clinic-v3.vercel.app/board/{self.patient_id}
+"""
+            except Exception as e:
+                logger.warning(f"Failed to load system prompt for streaming: {e}")
+                system_instruction = "You are a helpful medical AI assistant."
+        
+        # Ensure context is loaded
+        if self.patient_id and not self.context_data:
+            logger.info("Context not loaded yet, loading now...")
+            await self._load_patient_context()
         
         context_prompt = self._build_context_prompt()
         full_message = f"{context_prompt}\n\nUser Question: {message}"

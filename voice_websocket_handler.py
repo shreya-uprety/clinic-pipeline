@@ -35,31 +35,89 @@ class VoiceWebSocketHandler:
             location="us-central1"
         )
     
-    def get_system_instruction(self):
-        """Get system instruction for this patient"""
-        return f"""You are an expert medical AI assistant specializing in hepatology and clinical care.
+    async def get_system_instruction_with_context(self):
+        """Get system instruction with patient context for this patient"""
+        try:
+            # Load the system prompt from file
+            with open("system_prompts/system_prompt.md", "r", encoding="utf-8") as f:
+                base_prompt = f.read()
+            
+            # Load patient context if chat_agent is available
+            context_info = ""
+            if self.chat_agent:
+                # Ensure context is loaded
+                if not self.chat_agent.context_data:
+                    await self.chat_agent._load_patient_context()
+                
+                # Build context summary for system prompt
+                if self.chat_agent.context_data and self.chat_agent.context_data.get("data"):
+                    data = self.chat_agent.context_data["data"]
+                    context_info = "\n\n--- LOADED PATIENT DATA ---\n"
+                    
+                    if data.get("patient_profile"):
+                        context_info += f"Patient Profile: {str(data['patient_profile'])[:500]}\n"
+                    
+                    if data.get("basic_info"):
+                        context_info += f"Basic Info: {str(data['basic_info'])[:300]}\n"
+                    
+                    if data.get("patient_context"):
+                        context_info += f"Clinical Context: {str(data['patient_context'])[:300]}\n"
+                    
+                    context_info += "--- END LOADED DATA ---\n"
+            
+            # Add patient-specific context
+            return f"""{base_prompt}
 
-CRITICAL CONTEXT - REMEMBER THIS THROUGHOUT THE ENTIRE CONVERSATION:
+--- PATIENT-SPECIFIC CONTEXT ---
+Current Patient ID: {self.patient_id}
+Board URL: https://iso-clinic-v3.vercel.app/board/{self.patient_id}
+{context_info}
+
+CRITICAL INSTRUCTIONS:
 - You are currently helping with patient ID: {self.patient_id}
 - This patient ID never changes during this conversation
-- When asked about test results, labs, medications, or any patient data, use patient ID: {self.patient_id}
+- When using tools, ALWAYS use patient_id: {self.patient_id}
 - NEVER ask for patient ID - you already know it is {self.patient_id}
+- All data queries should reference patient {self.patient_id}
+- Patient information is loaded above - use it to answer questions
+"""
+        except Exception as e:
+            logger.error(f"Failed to load system prompt: {e}")
+            # Fallback to basic prompt
+            return f"""You are MedForce Agent — a real-time conversational AI assistant.
+Current Patient ID: {self.patient_id}
+Board URL: https://iso-clinic-v3.vercel.app/board/{self.patient_id}
+Assist the clinician with patient care. Communicate only in English. Be concise.
+"""
+    
+    def get_system_instruction(self):
+        """Get system instruction for this patient (sync wrapper)"""
+        try:
+            # Load the system prompt from file
+            with open("system_prompts/system_prompt.md", "r", encoding="utf-8") as f:
+                base_prompt = f.read()
+            
+            # Add patient-specific context
+            return f"""{base_prompt}
 
-Your capabilities:
-1. Answer medical questions using patient context
-2. Retrieve specific data using available tools
-3. Provide evidence-based clinical reasoning
-4. Maintain natural conversation flow
+--- PATIENT-SPECIFIC CONTEXT ---
+Current Patient ID: {self.patient_id}
+Board URL: https://iso-clinic-v3.vercel.app/board/{self.patient_id}
 
-Guidelines:
-- ALWAYS respond in English only. Never use Hindi or any other language.
-- Speak naturally and conversationally (you're having a voice call)
-- Be concise but thorough in your responses
-- Use medical terminology appropriately but explain complex terms
-- Reference specific patient data when available
-- Ask clarifying questions when needed
-- When using tools like get_patient_labs, get_patient_encounters, etc., ALWAYS use patient_id: {self.patient_id}
-- If the user says "stop" or "stop talking", immediately acknowledge and ask what they need
+CRITICAL INSTRUCTIONS:
+- You are currently helping with patient ID: {self.patient_id}
+- This patient ID never changes during this conversation
+- When using tools, ALWAYS use patient_id: {self.patient_id}
+- NEVER ask for patient ID - you already know it is {self.patient_id}
+- All data queries should reference patient {self.patient_id}
+"""
+        except Exception as e:
+            logger.error(f"Failed to load system prompt: {e}")
+            # Fallback to basic prompt
+            return f"""You are MedForce Agent — a real-time conversational AI assistant.
+Current Patient ID: {self.patient_id}
+Board URL: https://iso-clinic-v3.vercel.app/board/{self.patient_id}
+Assist the clinician with patient care. Communicate only in English. Be concise.
 """
     
     def get_config(self):
@@ -234,8 +292,17 @@ Guidelines:
             # Initialize chat agent for tools
             self.chat_agent = ChatAgent(patient_id=self.patient_id, use_tools=True)
             
-            # Get configuration
+            # Load patient context
+            logger.info(f"Loading patient context for voice session...")
+            if not self.chat_agent.context_data:
+                await self.chat_agent._load_patient_context()
+            
+            # Get configuration with context
+            system_instruction = await self.get_system_instruction_with_context()
             config = self.get_config()
+            config["system_instruction"] = system_instruction
+            
+            logger.info(f"✅ Voice session configured with patient context")
             
             # Connect to Gemini Live API
             async with (

@@ -340,22 +340,32 @@ class WebSocketLiveAgent:
             patient_id: Patient identifier
         """
         try:
-            # Get system prompt for medical context
-            system_instruction = f"""You are an expert medical AI assistant specializing in hepatology and clinical care.
-            You're currently helping with patient {patient_id}.
-            
-Your capabilities:
-1. Answer medical questions using patient context
-2. Retrieve specific data using available tools
-3. Provide evidence-based clinical reasoning
-4. Maintain natural conversation flow
+            # Load system prompt from file
+            try:
+                with open("system_prompts/system_prompt.md", "r", encoding="utf-8") as f:
+                    base_prompt = f.read()
+                
+                # Add patient-specific context
+                system_instruction = f"""{base_prompt}
 
-Guidelines:
-- Speak naturally and conversationally (you're having a voice call)
-- Be concise but thorough in your responses
-- Use medical terminology appropriately but explain complex terms
-- Reference specific patient data when available
-- Ask clarifying questions when needed
+--- PATIENT-SPECIFIC CONTEXT ---
+Current Patient ID: {patient_id}
+Board URL: https://iso-clinic-v3.vercel.app/board/{patient_id}
+
+CRITICAL INSTRUCTIONS:
+- You are currently helping with patient ID: {patient_id}
+- This patient ID never changes during this conversation
+- When using tools, ALWAYS use patient_id: {patient_id}
+- NEVER ask for patient ID - you already know it is {patient_id}
+- All data queries should reference patient {patient_id}
+"""
+            except Exception as e:
+                logger.error(f"Failed to load system prompt: {e}")
+                # Fallback to basic prompt
+                system_instruction = f"""You are MedForce Agent — a real-time conversational AI assistant.
+Current Patient ID: {patient_id}
+Board URL: https://iso-clinic-v3.vercel.app/board/{patient_id}
+Assist the clinician with patient care. Communicate only in English. Be concise.
 """
             
             # Gemini Live configuration
@@ -814,7 +824,11 @@ async def websocket_pre_consult_endpoint(websocket: WebSocket, patient_id: str):
         websocket: WebSocket connection
         patient_id: Patient identifier
     """
-    await websocket_agent.handle_connection(websocket, patient_id, agent_type="pre_consult")
+    agent = get_websocket_agent()
+    if agent is None:
+        await websocket.close(code=1011, reason="WebSocket agent initialization failed")
+        return
+    await agent.handle_connection(websocket, patient_id, agent_type="pre_consult")
 
 
 async def websocket_chat_endpoint(websocket: WebSocket, patient_id: str):
@@ -830,7 +844,11 @@ async def websocket_chat_endpoint(websocket: WebSocket, patient_id: str):
         websocket: WebSocket connection
         patient_id: Patient identifier
     """
-    await websocket_agent.handle_connection(websocket, patient_id, agent_type="chat")
+    agent = get_websocket_agent()
+    if agent is None:
+        await websocket.close(code=1011, reason="WebSocket agent initialization failed")
+        return
+    await agent.handle_connection(websocket, patient_id, agent_type="chat")
 
 
 # Example client-side JavaScript for reference
